@@ -1,0 +1,10 @@
+[package]
+name = "stella-implementation-in-rust"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+antlr-rust = { git = "https://github.com/SnejUgal/antlr4rust.git" }
+clap = { version = "4.1.13", features = ["derive"] }
