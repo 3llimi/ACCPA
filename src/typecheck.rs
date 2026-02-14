@@ -222,7 +222,9 @@ fn typecheck_expr(expr: &Expr, expected: &Type, env: &TypeEnv) -> Result<(), Typ
             typecheck_expr(n, &Type::Nat, env)?;
             typecheck_expr(z, expected, env)?;
             
-            let s_type = Type::Fun(vec![Type::Nat], Box::new(expected.clone()));
+            // Step function: Nat → (T → T)
+            let inner_fn = Type::Fun(vec![expected.clone()], Box::new(expected.clone()));
+            let s_type = Type::Fun(vec![Type::Nat], Box::new(inner_fn));
             typecheck_expr(s, &s_type, env)
         }
         
@@ -399,12 +401,37 @@ fn typecheck_expr(expr: &Expr, expected: &Type, env: &TypeEnv) -> Result<(), Typ
         }
         
         Expr::ListHead(list) => {
-            let list_type = Type::List(Box::new(expected.clone()));
-            typecheck_expr(list, &list_type, env)
+            let list_type = infer_expr(list, env)?;
+            match list_type {
+                Type::List(elem_type) => {
+                    if elem_type.as_ref() != expected {
+                        return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                            expected: expected.clone(),
+                            found: elem_type.as_ref().clone(),
+                            expr: None,
+                        });
+                    }
+                    Ok(())
+                }
+                _ => Err(TypeError::ErrorNotAList(list_type)),
+            }
         }
         
         Expr::ListTail(list) => {
-            typecheck_expr(list, expected, env)
+            let list_type = infer_expr(list, env)?;
+            match list_type {
+                Type::List(_) => {
+                    if &list_type != expected {
+                        return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                            expected: expected.clone(),
+                            found: list_type,
+                            expr: None,
+                        });
+                    }
+                    Ok(())
+                }
+                _ => Err(TypeError::ErrorNotAList(list_type)),
+            }
         }
         
         Expr::ListIsEmpty(list) => {
@@ -455,8 +482,28 @@ fn typecheck_expr(expr: &Expr, expected: &Type, env: &TypeEnv) -> Result<(), Typ
         }
         
         Expr::Fix(f) => {
-            let f_type = Type::Fun(vec![expected.clone()], Box::new(expected.clone()));
-            typecheck_expr(f, &f_type, env)
+            let f_type = infer_expr(f, env)?;
+            
+            match &f_type { 
+                Type::Fun(param_types, return_type) => {
+                    if param_types.len() != 1 || param_types[0] != **return_type { 
+                        return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                            expected: Type::Fun(vec![expected.clone()], Box::new(expected.clone())),
+                            found: f_type.clone(),
+                            expr: None,
+                        });
+                    }
+                    if return_type.as_ref() != expected {
+                        return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                            expected: expected.clone(),
+                            found: return_type.as_ref().clone(),
+                            expr: None,
+                        });
+                    }
+                    Ok(())
+                }
+                _ => Err(TypeError::ErrorNotAFunction(f_type)),
+            }
         }
         
         _ => Ok(()),
@@ -487,10 +534,31 @@ fn infer_expr(expr: &Expr, env: &TypeEnv) -> Result<Type, TypeError> {
             Ok(Type::Fun(param_types, Box::new(return_type)))
         }
         
-        Expr::Application(func, _args) => {
+        Expr::Application(func, args) => {
             let func_type = infer_expr(func, env)?;
+
             match func_type {
-                Type::Fun(_, return_type) => Ok(*return_type),
+                Type::Fun(param_types, return_type) => {
+
+                    if args.len() != param_types.len() {
+                        return Err(TypeError::ErrorNotAFunction(
+                            Type::Fun(param_types, return_type),
+                        ));
+                    }
+                    for (arg, param_ty) in args.iter().zip(param_types.iter()) {
+                        let arg_ty = infer_expr(arg, env)?;
+
+                        if arg_ty != *param_ty {
+                            return Err(TypeError::ErrorUnexpectedTypeForParameter {
+                                expected: param_ty.clone(),
+                                found: arg_ty,
+                            });
+                        }
+                    }
+
+                    Ok(*return_type)
+                }
+
                 _ => Err(TypeError::ErrorNotAFunction(func_type)),
             }
         }
@@ -500,6 +568,18 @@ fn infer_expr(expr: &Expr, env: &TypeEnv) -> Result<Type, TypeError> {
                 .map(|e| infer_expr(e, env))
                 .collect();
             Ok(Type::Tuple(types?))
+        }
+        
+        Expr::Record(bindings) => {
+            let mut fields = Vec::new();
+            for binding in bindings {
+                let field_ty = infer_expr(&binding.expr, env)?;
+                fields.push(RecordFieldType {
+                    label: binding.name.clone(),
+                    type_: field_ty,
+                });
+            }
+            Ok(Type::Record(fields))
         }
         
         Expr::DotTuple(tuple_expr, index) => {
@@ -519,7 +599,6 @@ fn infer_expr(expr: &Expr, env: &TypeEnv) -> Result<Type, TypeError> {
         }
         
         Expr::TypeAscription(_e, ty) => Ok(ty.clone()),
-        
         Expr::If(_, then_branch, _) => infer_expr(then_branch, env),
         
         Expr::List(elements) => {
@@ -532,16 +611,41 @@ fn infer_expr(expr: &Expr, env: &TypeEnv) -> Result<Type, TypeError> {
         }
         
         Expr::Inl(_) | Expr::Inr(_) => Err(TypeError::ErrorAmbiguousSumType),
-        
         Expr::Variant(_, _) => Err(TypeError::ErrorAmbiguousVariantType),
         
+        Expr::Fix(f) => {
+            let f_ty = infer_expr(f, env)?;
+            match f_ty {
+                Type::Fun(params, ret) if params.len() == 1 => Ok(*ret),
+                _ => Err(TypeError::ErrorNotAFunction(f_ty)),
+            }
+        }
+        
+        Expr::NatRec(n, z, _s) => {
+            infer_expr(z, env)
+        }
+
+        Expr::DotRecord(record_expr, field_name) => {
+            let record_type = infer_expr(record_expr, env)?;
+            match record_type {
+                Type::Record(fields) => {
+                    fields.iter()
+                        .find(|f| f.label == *field_name)
+                        .map(|f| f.type_.clone())
+                        .ok_or_else(|| TypeError::ErrorUnexpectedFieldAccess(field_name.clone()))
+                }
+                _ => Err(TypeError::ErrorNotARecord(record_type)),
+            }
+        },
+        
         _ => Err(TypeError::ErrorUnexpectedTypeForExpression {
-            expected: Type::Unit,
-            found: Type::Unit,
-            expr: Some("Cannot infer type".to_string()),
+            expected: Type::Bottom,
+            found: Type::Bottom,
+            expr: Some(format!("No inference: {:?}", expr)),
         }),
     }
 }
+
 
 fn typecheck_pattern(
     pattern: &Pattern,
