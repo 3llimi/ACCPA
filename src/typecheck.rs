@@ -1,6 +1,6 @@
 use crate::ast::*;
 use crate::error::TypeError;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 type TypeEnv = HashMap<String, Type>;
 
@@ -50,6 +50,14 @@ fn typecheck_decl(decl: &Decl, fn_env: &HashMap<String, Type>) -> Result<(), Typ
             return_expr,
             ..
         } => {
+            for param in param_decls {
+                check_type_validity(&param.type_)?;
+            }
+            
+            if let Some(ret_ty) = return_type {
+                check_type_validity(ret_ty)?;
+            }
+            
             let mut env: TypeEnv = HashMap::new();
             
             for param in param_decls {
@@ -169,7 +177,7 @@ fn typecheck_expr(expr: &Expr, expected: &Type, env: &TypeEnv) -> Result<(), Typ
                 _ => Err(TypeError::ErrorUnexpectedLambda(expected.clone())),
             }
         }
-        
+
         Expr::Application(func, args) => {
             let func_type = infer_expr(func, env)?;
             
@@ -183,10 +191,20 @@ fn typecheck_expr(expr: &Expr, expected: &Type, env: &TypeEnv) -> Result<(), Typ
                         });
                     }
                     
+                    // Check arity
                     if args.len() != param_types.len() {
-                        return Err(TypeError::ErrorNotAFunction(Type::Fun(param_types, return_type)));
+                        return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                            expected: expected.clone(),
+                            found: Type::Fun(param_types.clone(), return_type.clone()),
+                            expr: Some(format!(
+                                "Function expects {} arguments but got {}",
+                                param_types.len(),
+                                args.len()
+                            )),
+                        });
                     }
                     
+                    // Check each argument type
                     for (arg, param_type) in args.iter().zip(param_types.iter()) {
                         typecheck_expr(arg, param_type, env)?;
                     }
@@ -356,17 +374,36 @@ fn typecheck_expr(expr: &Expr, expected: &Type, env: &TypeEnv) -> Result<(), Typ
             
             let scrutinee_type = infer_expr(scrutinee, env)?;
             
-            match &scrutinee_type {
-                Type::Sum(_, _) => {
-                    let has_inl = cases.iter().any(|c| matches!(c.pattern, Pattern::Inl(_)));
-                    let has_inr = cases.iter().any(|c| matches!(c.pattern, Pattern::Inr(_)));
-                    
-                    if !has_inl || !has_inr {
-                        return Err(TypeError::ErrorNonexhaustiveMatchPatterns);
+        match &scrutinee_type {
+            Type::Sum(_, _) => {
+                let has_inl = cases.iter().any(|c| matches!(c.pattern, Pattern::Inl(_)));
+                let has_inr = cases.iter().any(|c| matches!(c.pattern, Pattern::Inr(_)));
+                
+                if !has_inl || !has_inr {
+                    return Err(TypeError::ErrorNonexhaustiveMatchPatterns);
+                }
+            }
+            
+            Type::Variant(fields) => {
+                let mut covered_labels: std::collections::HashSet<String> = 
+                    std::collections::HashSet::new();
+                
+                for case in cases {
+                    if let Pattern::Variant(label, _) = &case.pattern {
+                        covered_labels.insert(label.clone());
                     }
                 }
-                _ => {}
+                
+                let required_labels: std::collections::HashSet<String> = 
+                    fields.iter().map(|f| f.label.clone()).collect();
+                
+                if covered_labels != required_labels {
+                    return Err(TypeError::ErrorNonexhaustiveMatchPatterns);
+                }
             }
+            
+            _ => {}
+        }
             
             for case in cases {
                 let pattern_env = typecheck_pattern(&case.pattern, &scrutinee_type, env)?;
@@ -483,16 +520,18 @@ fn typecheck_expr(expr: &Expr, expected: &Type, env: &TypeEnv) -> Result<(), Typ
         
         Expr::Fix(f) => {
             let f_type = infer_expr(f, env)?;
+            let f_type_clone = f_type.clone();
             
-            match &f_type { 
+            match f_type {
                 Type::Fun(param_types, return_type) => {
-                    if param_types.len() != 1 || param_types[0] != **return_type { 
-                        return Err(TypeError::ErrorUnexpectedTypeForExpression {
-                            expected: Type::Fun(vec![expected.clone()], Box::new(expected.clone())),
-                            found: f_type.clone(),
-                            expr: None,
-                        });
+                    if param_types.len() != 1 {
+                        return Err(TypeError::ErrorNotAFunction(f_type_clone));
                     }
+                    
+                    if param_types[0] != *return_type {
+                        return Err(TypeError::ErrorNotAFunction(f_type_clone));
+                    }
+                    
                     if return_type.as_ref() != expected {
                         return Err(TypeError::ErrorUnexpectedTypeForExpression {
                             expected: expected.clone(),
@@ -500,9 +539,10 @@ fn typecheck_expr(expr: &Expr, expected: &Type, env: &TypeEnv) -> Result<(), Typ
                             expr: None,
                         });
                     }
+                    
                     Ok(())
                 }
-                _ => Err(TypeError::ErrorNotAFunction(f_type)),
+                _ => Err(TypeError::ErrorNotAFunction(f_type_clone)),
             }
         }
         
@@ -536,30 +576,38 @@ fn infer_expr(expr: &Expr, env: &TypeEnv) -> Result<Type, TypeError> {
         
         Expr::Application(func, args) => {
             let func_type = infer_expr(func, env)?;
+            let func_type_clone = func_type.clone();
 
             match func_type {
                 Type::Fun(param_types, return_type) => {
-
+                    // Check arity
                     if args.len() != param_types.len() {
-                        return Err(TypeError::ErrorNotAFunction(
-                            Type::Fun(param_types, return_type),
-                        ));
+                        return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                            expected: Type::Fun(vec![], Box::new(Type::Unit)),
+                            found: func_type_clone.clone(),
+                            expr: Some(format!(
+                                "Function expects {} arguments but got {}",
+                                param_types.len(),
+                                args.len()
+                            )),
+                        });
                     }
+                    
                     for (arg, param_ty) in args.iter().zip(param_types.iter()) {
                         let arg_ty = infer_expr(arg, env)?;
-
+                        
                         if arg_ty != *param_ty {
-                            return Err(TypeError::ErrorUnexpectedTypeForParameter {
+                            return Err(TypeError::ErrorUnexpectedTypeForExpression {
                                 expected: param_ty.clone(),
                                 found: arg_ty,
+                                expr: Some("Function argument type mismatch".to_string()),
                             });
                         }
                     }
 
                     Ok(*return_type)
                 }
-
-                _ => Err(TypeError::ErrorNotAFunction(func_type)),
+                _ => Err(TypeError::ErrorNotAFunction(func_type_clone)),
             }
         }
         
@@ -609,7 +657,7 @@ fn infer_expr(expr: &Expr, env: &TypeEnv) -> Result<Type, TypeError> {
                 Ok(Type::List(Box::new(elem_type)))
             }
         }
-        
+
         Expr::Inl(_) | Expr::Inr(_) => Err(TypeError::ErrorAmbiguousSumType),
         Expr::Variant(_, _) => Err(TypeError::ErrorAmbiguousVariantType),
         
@@ -622,6 +670,14 @@ fn infer_expr(expr: &Expr, env: &TypeEnv) -> Result<Type, TypeError> {
         }
         
         Expr::NatRec(n, z, _s) => {
+            let n_ty = infer_expr(n, env)?;
+            if n_ty != Type::Nat {
+                return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                    expected: Type::Nat,
+                    found: n_ty,
+                    expr: Some("NatRec requires Nat for iteration count".to_string()),
+                });
+            }
             infer_expr(z, env)
         }
 
@@ -684,7 +740,120 @@ fn typecheck_pattern(
             }
         }
         
-        _ => Ok(new_env),
+        Pattern::Variant(label, opt_pattern) => {
+            match expected_type {
+                Type::Variant(fields) => {
+                    let field = fields.iter()
+                        .find(|f| &f.label == label)
+                        .ok_or_else(|| TypeError::ErrorUnexpectedPatternForType {
+                            expected: expected_type.clone(),
+                            pattern: label.clone(),
+                        })?;
+                    
+                    match (&field.type_, opt_pattern) {
+                        (Some(field_ty), Some(pat)) => {
+                            typecheck_pattern(pat, field_ty, _env)
+                        }
+                        (None, None) => Ok(new_env),
+                        (Some(_), None) => Err(TypeError::ErrorUnexpectedPatternForType {
+                            expected: expected_type.clone(),
+                            pattern: format!("Variant {} should have data", label),
+                        }),
+                        (None, Some(_)) => Err(TypeError::ErrorUnexpectedPatternForType {
+                            expected: expected_type.clone(),
+                            pattern: format!("Variant {} should not have data", label),
+                        }),
+                    }
+                }
+                _ => Err(TypeError::ErrorUnexpectedPatternForType {
+                    expected: expected_type.clone(),
+                    pattern: format!("variant {}", label),
+                }),
+            }
+        }
+        
+        Pattern::Tuple(_) | Pattern::Record(_) | Pattern::List(_) 
+        | Pattern::Cons(_, _) | Pattern::Int(_) | Pattern::Succ(_)
+        | Pattern::True | Pattern::False | Pattern::Unit 
+        | Pattern::Ascription(_, _) | Pattern::CastAs(_, _) => {
+            Ok(new_env)
+        }
+    }
+}
+
+fn check_type_validity(ty: &Type) -> Result<(), TypeError> {
+    match ty {
+        Type::Record(fields) => {
+            let mut seen = HashSet::new();
+            let mut duplicates = Vec::new();
+            
+            for field in fields {
+                if !seen.insert(&field.label) {
+                    duplicates.push(field.label.clone());
+                }
+            }
+            
+            if !duplicates.is_empty() {
+                return Err(TypeError::ErrorDuplicateRecordTypeFields(duplicates));
+            }
+            
+            for field in fields {
+                check_type_validity(&field.type_)?;
+            }
+            
+            Ok(())
+        }
+        
+        Type::Variant(fields) => {
+            let mut seen = HashSet::new();
+            let mut duplicates = Vec::new();
+            
+            for field in fields {
+                if !seen.insert(&field.label) {
+                    duplicates.push(field.label.clone());
+                }
+            }
+            
+            if !duplicates.is_empty() {
+                return Err(TypeError::ErrorDuplicateVariantTypeFields(duplicates));
+            }
+            
+            for field in fields {
+                if let Some(field_ty) = &field.type_ {
+                    check_type_validity(field_ty)?;
+                }
+            }
+            
+            Ok(())
+        }
+        
+        Type::Fun(params, ret) => {
+            for param in params {
+                check_type_validity(param)?;
+            }
+            check_type_validity(ret)
+        }
+        
+        Type::Tuple(types) => {
+            for ty in types {
+                check_type_validity(ty)?;
+            }
+            Ok(())
+        }
+        
+        Type::List(ty) => check_type_validity(ty),
+        
+        Type::Sum(left, right) => {
+            check_type_validity(left)?;
+            check_type_validity(right)
+        }
+        
+        Type::Ref(ty) => check_type_validity(ty),
+        Type::Rec(_, ty) => check_type_validity(ty),
+        Type::ForAll(_, ty) => check_type_validity(ty),
+        
+        Type::Bool | Type::Nat | Type::Unit | Type::Var(_) 
+        | Type::Top | Type::Bottom | Type::Auto => Ok(()),
     }
 }
 
