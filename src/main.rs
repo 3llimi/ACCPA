@@ -1,9 +1,9 @@
 use std::io::Read;
-
 use clap::Parser;
 
 mod ast;
 mod build;
+mod error;
 mod eval;
 mod stellalexer;
 mod stellaparser;
@@ -15,9 +15,6 @@ struct Args {
     program: Option<std::path::PathBuf>,
 }
 
-/// Type alias for a [Result] with [ANTLRError] type as error.
-/// The error type is boxed because it is relatively big
-/// (check https://rust-lang.github.io/rust-clippy/master/index.html#result_large_err for more info).
 type AntlrResult<T> = Result<T, Box<antlr_rust::errors::ANTLRError>>;
 
 type StellaParser<'a, T> = stellaparser::stellaParser<
@@ -51,15 +48,10 @@ fn parse_expr(input: &str) -> AntlrResult<ast::Expr> {
 fn main() {
     let args = Args::parse();
 
-    println!("test started");
-
-    // Parse program
+    // Parse program from stdin or file
     let input_program = match &args.program {
         Some(path) => std::fs::read_to_string(path).expect("Failed to read from the file"),
         None => {
-            // Read the program from stdin
-            println!("Waiting for the program:");
-
             let mut program = String::new();
             std::io::stdin()
                 .read_to_string(&mut program)
@@ -68,35 +60,25 @@ fn main() {
         }
     };
 
-    println!("\nParsing the program...");
-    let program = parse_program(&input_program).expect("Parse Error");
-
-    typecheck::typecheck_program(&program).expect("Type Error");
-
-    println!("\nProgram looks fine!");
-
-    // Parse input expression
-    let input_expr = match &args.program {
-        None => return,
-        Some(_) => {
-            // Read the input for the program from stdin
-            println!("Waiting for the input for the program:");
-            let mut data = String::new();
-            std::io::stdin()
-                .read_to_string(&mut data)
-                .expect("IO Error");
-            data
+    // Parse the program
+    let program = match parse_program(&input_program) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Parse Error: {:?}", e);
+            std::process::exit(1);
         }
     };
 
-    println!("\nParsing input expression...");
-    let expr = parse_expr(&input_expr).expect("Parse Error");
-
-    // typecheck::typecheck_expr(&program).expect("Type Error");
-
-    // Evaluate the program with the given expression as input
-    println!("\nEvaluating...");
-    let _result = eval::evaluate_program(&program, &expr);
-
-    println!("Done!");
+    // Type check the program
+    match typecheck::typecheck_program(&program) {
+        Ok(()) => {
+            // Success - exit with 0
+            std::process::exit(0);
+        }
+        Err(type_error) => {
+            // Print error to stderr and exit with non-zero
+            eprintln!("{}", type_error);
+            std::process::exit(1);
+        }
+    }
 }

@@ -269,7 +269,7 @@ fn build_pattern(ctx: &PatternContextAll<'_>) -> Pattern {
                 .iter()
                 .map(|ctx| LabelledPattern {
                     label: token_name(&ctx.label).into_owned(),
-                    pattern: build_pattern(ctx.pattern_.as_ref().unwrap()),
+                    pattern: ctx.pattern_.as_ref().map(|p| build_pattern(p)),
                 })
                 .collect(),
         ),

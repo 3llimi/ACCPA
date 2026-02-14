@@ -1,4 +1,4 @@
-#![allow(dead_code)] // A lot of stuff here is yet to be used
+#![allow(dead_code)]
 
 mod display;
 
@@ -77,6 +77,40 @@ pub struct MatchCase {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub struct RecordFieldType {
+    pub label: String,
+    pub type_: Type,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub struct VariantFieldType {
+    pub label: String,
+    pub type_: Option<Type>,
+}
+
+// Type enum
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub enum Type {
+    Bool,
+    Nat,
+    Unit,
+    Fun(Vec<Type>, Box<Type>),  // Note: Vec for params
+    Tuple(Vec<Type>),
+    Record(Vec<RecordFieldType>),
+    Sum(Box<Type>, Box<Type>),
+    List(Box<Type>),
+    Variant(Vec<VariantFieldType>),
+    Var(String),
+    Rec(String, Box<Type>),
+    Top,
+    Bottom,
+    Auto,
+    Ref(Box<Type>),
+    ForAll(Vec<String>, Box<Type>),
+}
+
+// Expr enum
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum Expr {
     DotRecord(Box<Expr>, String),
     DotTuple(Box<Expr>, usize),
@@ -116,12 +150,16 @@ pub enum Expr {
     Variant(String, Option<Box<Expr>>),
     Match(Box<Expr>, Vec<MatchCase>),
     List(Vec<Expr>),
+    If(Box<Expr>, Box<Expr>, Box<Expr>),
+    Let(Vec<PatternBinding>, Box<Expr>),
+    LetRec(Vec<PatternBinding>, Box<Expr>),
     LessThan(Box<Expr>, Box<Expr>),
     LessThanOrEqual(Box<Expr>, Box<Expr>),
     GreaterThan(Box<Expr>, Box<Expr>),
     GreaterThanOrEqual(Box<Expr>, Box<Expr>),
     Equal(Box<Expr>, Box<Expr>),
     NotEqual(Box<Expr>, Box<Expr>),
+    Sequence(Box<Expr>, Box<Expr>),
     Assignment(Box<Expr>, Box<Expr>),
     TypeCast(Box<Expr>, Type),
     Reference(Box<Expr>),
@@ -137,44 +175,9 @@ pub enum Expr {
         fallback_arm: Box<Expr>,
     },
     TryWith(Box<Expr>, Box<Expr>),
-    If(Box<Expr>, Box<Expr>, Box<Expr>),
-    Let(Vec<PatternBinding>, Box<Expr>),
-    LetRec(Vec<PatternBinding>, Box<Expr>),
-    Sequence(Box<Expr>, Box<Expr>),
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub struct RecordFieldType {
-    pub label: String,
-    pub type_: Type,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub struct VariantFieldType {
-    pub label: String,
-    pub type_: Option<Type>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub enum Type {
-    Bool,
-    Nat,
-    Ref(Box<Type>),
-    Sum(Box<Type>, Box<Type>),
-    Fun(Vec<Type>, Box<Type>),
-    ForAll(Vec<String>, Box<Type>),
-    Rec(String, Box<Type>),
-    Tuple(Vec<Type>),
-    Record(Vec<RecordFieldType>),
-    Variant(Vec<VariantFieldType>),
-    List(Box<Type>),
-    Unit,
-    Top,
-    Bottom,
-    Auto,
-    Var(String),
-}
-
+// Pattern enum
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub struct PatternBinding {
     pub pattern: Pattern,
@@ -182,26 +185,26 @@ pub struct PatternBinding {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub struct LabelledPattern {
+pub struct LabelledPattern { 
     pub label: String,
-    pub pattern: Pattern,
+    pub pattern: Option<Pattern>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum Pattern {
-    Variant(String, Option<Box<Pattern>>),
+    Var(String),
     Inl(Box<Pattern>),
     Inr(Box<Pattern>),
     Tuple(Vec<Pattern>),
     Record(Vec<LabelledPattern>),
+    Variant(String, Option<Box<Pattern>>),
     List(Vec<Pattern>),
     Cons(Box<Pattern>, Box<Pattern>),
-    False,
-    True,
-    Unit,
-    Int(isize),
+    Int(usize),
     Succ(Box<Pattern>),
-    Var(String),
+    True,
+    False,
+    Unit,
     Ascription(Box<Pattern>, Type),
     CastAs(Box<Pattern>, Type),
 }

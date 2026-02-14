@@ -613,7 +613,10 @@ impl Display for Type {
 
 impl Display for LabelledPattern {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} = {}", self.label, self.pattern)
+        match &self.pattern {
+            Some(p) => write!(formatter, "{} = {}", self.label, p),
+            None => write!(formatter, "{}", self.label),
+        }
     }
 }
 
