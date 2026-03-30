@@ -1,0 +1,8 @@
+language core;
+extend with #structural-subtyping, #top-type;
+fn blackhole(x : Top) -> Nat {
+  return 0
+}
+fn main(n : Nat) -> Nat {
+  return blackhole(n)
+}

@@ -1,0 +1,19 @@
+language core;
+extend with #references, #unit-type, #sequencing, #let-bindings,
+            #exceptions, #exception-type-declaration;
+exception type = Nat
+fn safe_increment(r : &Nat) -> Unit {
+  return if Nat::iszero(*r)
+    then throw(0)
+    else r := succ(*r)
+}
+fn main(n : Nat) -> Nat {
+  return let r = new(n) in
+    try {
+      safe_increment(r);
+      safe_increment(r)
+    } catch {
+      e => r := 0
+    };
+    *r
+}

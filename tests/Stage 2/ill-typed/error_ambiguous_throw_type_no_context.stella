@@ -1,0 +1,6 @@
+language core;
+extend with #exceptions, #exception-type-declaration, #pairs, #let-bindings;
+exception type = Nat
+fn main(n : Nat) -> Nat {
+  return let p = { throw(n), n } in p.2
+}

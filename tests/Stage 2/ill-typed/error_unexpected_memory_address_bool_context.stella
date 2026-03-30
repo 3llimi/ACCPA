@@ -1,0 +1,5 @@
+language core;
+extend with #references;
+fn main(n : Nat) -> Nat {
+  return if <0x1> then n else succ(n)
+}

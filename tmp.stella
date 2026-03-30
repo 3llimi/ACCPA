@@ -1,0 +1,9 @@
+language core;
+
+fn foo(f : fn(Bool) -> Bool) -> Bool {
+  return f(true)
+}
+
+fn main(n : Nat) -> Bool {
+  return foo(fn(x : Nat) { return Nat::iszero(x) })
+}

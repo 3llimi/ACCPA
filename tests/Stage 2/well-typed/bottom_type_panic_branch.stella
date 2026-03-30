@@ -1,0 +1,5 @@
+language core;
+extend with #panic, #bottom-type;
+fn main(n : Nat) -> Nat {
+  return if Nat::iszero(n) then panic! else succ(n)
+}

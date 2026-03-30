@@ -1,0 +1,8 @@
+language core;
+extend with #structural-subtyping, #records;
+fn needs_xy(r : { x : Nat, y : Nat }) -> Nat {
+  return r.x
+}
+fn main(n : Nat) -> Nat {
+  return needs_xy({ x = n })
+}

@@ -1,0 +1,5 @@
+language core;
+extend with #panic, #let-bindings;
+fn main(n : Nat) -> Nat {
+  return let x = panic! in n
+}

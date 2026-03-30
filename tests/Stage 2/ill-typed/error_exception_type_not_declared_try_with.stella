@@ -1,0 +1,8 @@
+language core;
+extend with #exceptions;
+fn handler(e : Nat) -> Bool {
+  return false
+}
+fn main(n : Nat) -> Bool {
+  return try { true } with { handler }
+}

@@ -1,0 +1,11 @@
+language core;
+extend with #structural-subtyping;
+fn apply(f : fn(Nat) -> Nat) -> Nat {
+  return f(0)
+}
+fn bool_fn(x : Nat) -> Bool {
+  return false
+}
+fn main(n : Nat) -> Nat {
+  return apply(bool_fn)
+}

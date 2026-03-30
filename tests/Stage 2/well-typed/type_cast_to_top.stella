@@ -1,0 +1,8 @@
+language core;
+extend with #type-cast, #top-type, #structural-subtyping;
+fn discard(x : Top) -> Nat {
+  return 0
+}
+fn main(n : Nat) -> Nat {
+  return discard(n cast as Top)
+}

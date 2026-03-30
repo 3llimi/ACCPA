@@ -45,7 +45,7 @@ fn parse_expr(input: &str) -> AntlrResult<ast::Expr> {
     Ok(build::build_expr(&expr))
 }
 
-fn main() {
+fn run() -> i32 {
     let args = Args::parse();
 
     // Parse program from stdin or file
@@ -72,13 +72,29 @@ fn main() {
     // Type check the program
     match typecheck::typecheck_program(&program) {
         Ok(()) => {
-            // Success - exit with 0
-            std::process::exit(0);
+            0
         }
         Err(type_error) => {
-            // Print error to stderr and exit with non-zero
             eprintln!("{}", type_error);
-            std::process::exit(1);
+            1
         }
     }
+}
+
+fn main() {
+    let handle = std::thread::Builder::new()
+        .name("typechecker-main".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(run)
+        .expect("Failed to start typechecker thread");
+
+    let exit_code = match handle.join() {
+        Ok(code) => code,
+        Err(_) => {
+            eprintln!("Internal Error: typechecker panicked");
+            1
+        }
+    };
+
+    std::process::exit(exit_code);
 }

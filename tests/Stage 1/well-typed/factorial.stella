@@ -1,0 +1,24 @@
+language core;
+fn Nat2Nat::const(f : fn(Nat) -> Nat) -> (fn(Nat) -> (fn(Nat) -> Nat)) {
+  return fn(x : Nat) { return f; };
+}
+fn Nat::add(n : Nat) -> (fn(Nat) -> Nat) {
+  return fn(m : Nat) {
+    return Nat::rec(n, m, fn(i : Nat) {
+      return fn(r : Nat) { return succ(r); }; });
+  };
+}
+fn Nat::mul(n : Nat) -> (fn(Nat) -> Nat) {
+  return fn(m : Nat) {
+    return Nat::rec(n, 0, Nat2Nat::const(Nat::add(m)));
+  };
+}
+fn factorial(n : Nat) -> Nat {
+  return Nat::rec(n, 1, fn(i : Nat) {
+    return fn(r : Nat) {
+    return Nat::mul(r)(succ(i));
+  }; });
+}
+fn main(n : Nat) -> Nat {
+  return factorial(n);
+}

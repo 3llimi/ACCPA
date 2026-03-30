@@ -1,0 +1,7 @@
+language core;
+extend with #references, #unit-type, #sequencing;
+fn main(n : Nat) -> Nat {
+  return
+    n := succ(n);
+    n
+}

@@ -1,0 +1,8 @@
+language core;
+extend with #structural-subtyping, #records;
+fn get_x(r : { x : Nat }) -> Nat {
+  return r.x
+}
+fn main(n : Nat) -> Nat {
+  return get_x({ x = n, y = succ(n) })
+}

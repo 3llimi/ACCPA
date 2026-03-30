@@ -1,0 +1,5 @@
+language core;
+extend with #ambiguous-type-as-bottom, #structural-subtyping, #lists, #bottom-type;
+fn main(n : Nat) -> Bool {
+  return List::isempty([])
+}

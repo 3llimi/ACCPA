@@ -1,0 +1,20 @@
+language core;
+fn Nat::add(n : Nat) -> Nat {
+  return fn(m : Nat) {
+    return Nat::rec(n, m, fn(i : Nat) {
+      return fn(r : Nat) {
+        return succ( r );
+      };
+    });
+  };
+}
+fn square(n : Nat) -> Nat {
+  return Nat::rec(n, 0, fn(i : Nat) {
+      return fn(r : Nat) {
+        return Nat::add(i)( Nat::add(i)( succ( r )));
+      };
+  });
+}
+fn main(n : Nat) -> Nat {
+  return square(n);
+}

@@ -42,6 +42,23 @@ pub enum TypeError {
     ErrorDuplicateRecordFields(Vec<String>),
     ErrorDuplicateRecordTypeFields(Vec<String>),
     ErrorDuplicateVariantTypeFields(Vec<String>),
+    ErrorDuplicateExceptionType,
+    ErrorDuplicateExceptionVariant(String),
+    ErrorConflictingExceptionDeclarations,
+    ErrorIllegalLocalExceptionType,
+    ErrorIllegalLocalOpenVariantException,
+    ErrorExceptionTypeNotDeclared,
+    ErrorAmbiguousThrowType,
+    ErrorAmbiguousReferenceType,
+    ErrorAmbiguousPanicType,
+    ErrorNotAReference(Type),
+    ErrorUnexpectedMemoryAddress,
+    ErrorUnexpectedReference,
+    ErrorUnexpectedSubtype {
+        expected: Type,
+        found: Type,
+        expr: Option<String>,
+    },
 }
 
 impl fmt::Display for TypeError {
@@ -60,44 +77,44 @@ impl fmt::Display for TypeError {
                 write!(f, "ERROR_ILLEGAL_NEGATIVE_LITERAL:\n  Negative integers cannot be used where Nat is expected")
             }
             TypeError::ErrorUnexpectedTypeForExpression { expected, found, expr } => {
-                write!(f, "ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION:\n  expected type\n    {:?}\n  but found type\n    {:?}", expected, found)?;
+                write!(f, "ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION:\n  expected type\n    {}\n  but found type\n    {}", expected, found)?;
                 if let Some(e) = expr {
                     write!(f, "\n  for expression\n    {}", e)?;
                 }
                 Ok(())
             }
             TypeError::ErrorNotAFunction(ty) => {
-                write!(f, "ERROR_NOT_A_FUNCTION:\n  Expected function type, but found {:?}", ty)
+                write!(f, "ERROR_NOT_A_FUNCTION:\n  Expected function type, but found {}", ty)
             }
             TypeError::ErrorNotATuple(ty) => {
-                write!(f, "ERROR_NOT_A_TUPLE:\n  Expected tuple type, but found {:?}", ty)
+                write!(f, "ERROR_NOT_A_TUPLE:\n  Expected tuple type, but found {}", ty)
             }
             TypeError::ErrorNotARecord(ty) => {
-                write!(f, "ERROR_NOT_A_RECORD:\n  Expected record type, but found {:?}", ty)
+                write!(f, "ERROR_NOT_A_RECORD:\n  Expected record type, but found {}", ty)
             }
             TypeError::ErrorNotAList(ty) => {
-                write!(f, "ERROR_NOT_A_LIST:\n  Expected list type, but found {:?}", ty)
+                write!(f, "ERROR_NOT_A_LIST:\n  Expected list type, but found {}", ty)
             }
             TypeError::ErrorUnexpectedLambda(ty) => {
-                write!(f, "ERROR_UNEXPECTED_LAMBDA:\n  Lambda checked against non-function type {:?}", ty)
+                write!(f, "ERROR_UNEXPECTED_LAMBDA:\n  Lambda checked against non-function type {}", ty)
             }
             TypeError::ErrorUnexpectedTypeForParameter { expected, found } => {
-                write!(f, "ERROR_UNEXPECTED_TYPE_FOR_PARAMETER:\n  expected {:?}\n  but found {:?}", expected, found)
+                write!(f, "ERROR_UNEXPECTED_TYPE_FOR_PARAMETER:\n  expected {}\n  but found {}", expected, found)
             }
             TypeError::ErrorUnexpectedTuple(ty) => {
-                write!(f, "ERROR_UNEXPECTED_TUPLE:\n  Tuple checked against non-tuple type {:?}", ty)
+                write!(f, "ERROR_UNEXPECTED_TUPLE:\n  Tuple checked against non-tuple type {}", ty)
             }
             TypeError::ErrorUnexpectedRecord(ty) => {
-                write!(f, "ERROR_UNEXPECTED_RECORD:\n  Record checked against non-record type {:?}", ty)
+                write!(f, "ERROR_UNEXPECTED_RECORD:\n  Record checked against non-record type {}", ty)
             }
             TypeError::ErrorUnexpectedVariant(ty) => {
-                write!(f, "ERROR_UNEXPECTED_VARIANT:\n  Variant checked against non-variant type {:?}", ty)
+                write!(f, "ERROR_UNEXPECTED_VARIANT:\n  Variant checked against non-variant type {}", ty)
             }
             TypeError::ErrorUnexpectedList(ty) => {
-                write!(f, "ERROR_UNEXPECTED_LIST:\n  List checked against non-list type {:?}", ty)
+                write!(f, "ERROR_UNEXPECTED_LIST:\n  List checked against non-list type {}", ty)
             }
             TypeError::ErrorUnexpectedInjection(ty) => {
-                write!(f, "ERROR_UNEXPECTED_INJECTION:\n  Injection checked against non-sum type {:?}", ty)
+                write!(f, "ERROR_UNEXPECTED_INJECTION:\n  Injection checked against non-sum type {}", ty)
             }
             TypeError::ErrorMissingRecordFields(fields) => {
                 write!(f, "ERROR_MISSING_RECORD_FIELDS:\n  Missing fields: {:?}", fields)
@@ -136,7 +153,7 @@ impl fmt::Display for TypeError {
                 write!(f, "ERROR_NONEXHAUSTIVE_MATCH_PATTERNS:\n  Pattern match is not exhaustive")
             }
             TypeError::ErrorUnexpectedPatternForType { expected, pattern } => {
-                write!(f, "ERROR_UNEXPECTED_PATTERN_FOR_TYPE:\n  Pattern '{}' does not match type {:?}", pattern, expected)
+                write!(f, "ERROR_UNEXPECTED_PATTERN_FOR_TYPE:\n  Pattern '{}' does not match type {}", pattern, expected)
             }
             TypeError::ErrorDuplicateRecordFields(fields) => {
                 write!(f, "ERROR_DUPLICATE_RECORD_FIELDS:\n  Duplicate fields in record: {:?}", fields)
@@ -146,6 +163,49 @@ impl fmt::Display for TypeError {
             }
             TypeError::ErrorDuplicateVariantTypeFields(labels) => {
                 write!(f, "ERROR_DUPLICATE_VARIANT_TYPE_FIELDS:\n  Duplicate labels in variant type: {:?}", labels)
+            }
+            TypeError::ErrorDuplicateExceptionType => {
+                write!(f, "ERROR_DUPLICATE_EXCEPTION_TYPE:\n  more than one exception type declaration in the same scope")
+            }
+            TypeError::ErrorDuplicateExceptionVariant(label) => {
+                write!(f, "ERROR_DUPLICATE_EXCEPTION_VARIANT:\n  duplicate exception variant label '{}' in open variant exception declarations", label)
+            }
+            TypeError::ErrorConflictingExceptionDeclarations => {
+                write!(f, "ERROR_CONFLICTING_EXCEPTION_DECLARATIONS:\n  both exception type and exception variant declarations present in the same scope")
+            }
+            TypeError::ErrorIllegalLocalExceptionType => {
+                write!(f, "ERROR_ILLEGAL_LOCAL_EXCEPTION_TYPE:\n  exception type declaration appears in an illegal local scope")
+            }
+            TypeError::ErrorIllegalLocalOpenVariantException => {
+                write!(f, "ERROR_ILLEGAL_LOCAL_OPEN_VARIANT_EXCEPTION:\n  open variant exception declaration appears in an illegal local scope")
+            }
+            TypeError::ErrorExceptionTypeNotDeclared => {
+                write!(f, "ERROR_EXCEPTION_TYPE_NOT_DECLARED:\n  exceptions are used but no exception type has been declared")
+            }
+            TypeError::ErrorAmbiguousThrowType => {
+                write!(f, "ERROR_AMBIGUOUS_THROW_TYPE:\n  cannot determine type of throw expression without context")
+            }
+            TypeError::ErrorAmbiguousReferenceType => {
+                write!(f, "ERROR_AMBIGUOUS_REFERENCE_TYPE:\n  cannot determine reference type for memory address without context")
+            }
+            TypeError::ErrorAmbiguousPanicType => {
+                write!(f, "ERROR_AMBIGUOUS_PANIC_TYPE:\n  cannot determine type of panic! expression without context")
+            }
+            TypeError::ErrorNotAReference(found) => {
+                write!(f, "ERROR_NOT_A_REFERENCE:\n  expected a reference type\n  but found type\n    {}", found)
+            }
+            TypeError::ErrorUnexpectedMemoryAddress => {
+                write!(f, "ERROR_UNEXPECTED_MEMORY_ADDRESS:\n  memory address literal used where non-reference type was expected")
+            }
+            TypeError::ErrorUnexpectedReference => {
+                write!(f, "ERROR_UNEXPECTED_REFERENCE:\n  reference expression used where non-reference type was expected")
+            }
+            TypeError::ErrorUnexpectedSubtype { expected, found, expr } => {
+                write!(f, "ERROR_UNEXPECTED_SUBTYPE:\n  expected a subtype of type\n    {}\n  but found type\n    {}", expected, found)?;
+                if let Some(e) = expr {
+                    write!(f, "\n  for expression\n    {}", e)?;
+                }
+                Ok(())
             }
         }
     }

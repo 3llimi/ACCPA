@@ -1,0 +1,8 @@
+language core;
+extend with #panic;
+fn safe_pred(n : Nat) -> Nat {
+  return if Nat::iszero(n) then panic! else Nat::pred(n)
+}
+fn main(n : Nat) -> Nat {
+  return safe_pred(succ(n))
+}

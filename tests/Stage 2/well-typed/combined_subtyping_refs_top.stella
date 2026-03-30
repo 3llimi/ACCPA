@@ -1,0 +1,8 @@
+language core;
+extend with #structural-subtyping, #references, #top-type, #unit-type;
+fn store_anything(r : &Top, val : Top) -> Unit {
+  return r := val
+}
+fn main(n : Nat) -> Nat {
+  return n
+}

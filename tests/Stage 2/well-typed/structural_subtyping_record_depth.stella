@@ -1,0 +1,8 @@
+language core;
+extend with #structural-subtyping, #records, #top-type;
+fn accepts_top_field(r : { val : Top }) -> Top {
+  return r.val
+}
+fn main(n : Nat) -> Top {
+  return accepts_top_field({ val = n })
+}

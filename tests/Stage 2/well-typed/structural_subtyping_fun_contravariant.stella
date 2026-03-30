@@ -1,0 +1,11 @@
+language core;
+extend with #structural-subtyping, #top-type;
+fn apply_to_zero(f : fn(Nat) -> Nat) -> Nat {
+  return f(0)
+}
+fn nat_to_nat(x : Nat) -> Nat {
+  return succ(x)
+}
+fn main(n : Nat) -> Nat {
+  return apply_to_zero(nat_to_nat)
+}

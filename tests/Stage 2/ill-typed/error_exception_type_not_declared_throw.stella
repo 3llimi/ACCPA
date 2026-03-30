@@ -1,0 +1,5 @@
+language core;
+extend with #exceptions;
+fn main(n : Nat) -> Nat {
+  return throw(n)
+}

@@ -588,9 +588,9 @@ impl Display for Type {
                 display_list(params, ", ")
             ),
             Self::ForAll(vars, inner) => {
-                write!(formatter, "forall {}. {inner}", display_list(vars, ", "))
+                write!(formatter, "forall {}. {inner}", display_list(vars, " "))
             }
-            Self::Rec(name, inner) => write!(formatter, "μ {name}. {inner}"),
+            Self::Rec(name, inner) => write!(formatter, "µ {name}. {inner}"),
             Self::Tuple(types) => {
                 write!(formatter, "{{{}}}", display_list(types, ", "))
             }

@@ -1,0 +1,5 @@
+language core;
+extend with #references, #sum-types;
+fn main(n : Nat) -> Bool {
+  return if new(n) then true else false
+}

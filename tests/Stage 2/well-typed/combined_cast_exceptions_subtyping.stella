@@ -1,0 +1,10 @@
+language core;
+extend with #type-cast, #top-type, #structural-subtyping,
+            #exceptions, #exception-type-declaration;
+exception type = Nat
+fn risky_cast(x : Top) -> Nat {
+  return x cast as Nat
+}
+fn main(n : Nat) -> Nat {
+  return try { risky_cast(n) } catch { e => 0 }
+}
