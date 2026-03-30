@@ -1,22 +1,70 @@
-name: Rust
+name: ACCPA Public Tests
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - "main"
   pull_request:
-    branches: [ "main" ]
+    branches:
+      - "main"
+  workflow_dispatch:
+    inputs:
+      homework:
+        description: "Homework number to test (e.g. 1, 2, 3)"
+        required: false
+        default: "1"
 
-env:
-  CARGO_TERM_COLOR: always
+permissions:
+  contents: read
 
 jobs:
-  build:
-
+  public-tests:
     runs-on: ubuntu-latest
+    env:
+      CI_PROJECT_DIR: ${{ github.workspace }}
 
     steps:
-    - uses: actions/checkout@v3
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install autotest dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r accpa-autotest-for-submissions/requirements.txt
+
+      - name: Resolve homework number
+        id: hw
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.homework }}" ]]; then
+            echo "hw_num=${{ github.event.inputs.homework }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF_NAME}" =~ ^hw([0-9]+)$ ]]; then
+            echo "hw_num=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            # On main branch runs, default to hw1 unless manually overridden.
+            echo "hw_num=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run ACCPA pipeline
+        env:
+          CI_COMMIT_REF_NAME: hw${{ steps.hw.outputs.hw_num }}
+        run: |
+          python3 accpa-autotest-for-submissions/main.py --hw "${{ steps.hw.outputs.hw_num }}"
+
+      - name: Upload reports and image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hw${{ steps.hw.outputs.hw_num }}-artifacts
+          path: |
+            reports/public_hw${{ steps.hw.outputs.hw_num }}.json
+            solution/student_hw${{ steps.hw.outputs.hw_num }}_image.tar
+          if-no-files-found: warn
