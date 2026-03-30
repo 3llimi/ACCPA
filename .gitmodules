@@ -1,0 +1,7 @@
+
+[submodule "public-tests"]
+	path = public-tests
+	url = git@gitlab.pg.innopolis.university:accpa-2026/tests/public-tests.git
+[submodule "accpa-autotest-for-submissions"]
+	path = accpa-autotest-for-submissions
+	url = git@gitlab.pg.innopolis.university:accpa-2026/autotest/accpa-autotest-for-submissions.git

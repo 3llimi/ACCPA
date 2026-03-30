@@ -1,0 +1,21 @@
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+  GIT_SUBMODULE_FORCE_HTTPS: "true"
+  GIT_SUBMODULE_DEPTH: 1
+
+stages:
+  - test
+  - package
+
+public_tests: 
+  stage: test
+  image: docker:24.0.5
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  script:
+    - apk add --no-cache python3 py3-pip
+    - python3 accpa-autotest-for-submissions/main.py --hw 1
+  artifacts:
+    paths:
+      - reports/public_hw1.json
+      - solution/student_hw1_image.tar
