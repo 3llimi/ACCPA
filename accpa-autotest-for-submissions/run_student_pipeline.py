@@ -52,6 +52,18 @@ def run_student_pipeline(homework: str):
     else:
         print(f"Build Docker image successfully")
     
+    # Prefer a checker in the current homework folder, but fall back to any
+    # checker script available in the public-tests tree (e.g. hw1/check.sh).
+    check_script = os.path.join(tests_dir, "check.sh")
+    if not os.path.exists(check_script):
+        fallback_checkers = sorted(Path(project_dir).glob("public-tests/hw*/check.sh"))
+        if fallback_checkers:
+            check_script = str(fallback_checkers[0])
+            print(f"ℹ️ Using fallback checker script: {check_script}")
+        else:
+            print(f"❌ No checker script found for {homework} (expected {check_script})")
+            sys.exit(1)
+
     results = []
     start_time = time.time()
 
@@ -61,7 +73,6 @@ def run_student_pipeline(homework: str):
         test_name = f.replace(".in", "")
         input_file = os.path.join(tests_dir, f)
         expected_file = os.path.join(tests_dir, f"{test_name}.out")
-        check_script = os.path.join(tests_dir, "check.sh")
         try:
             with open(input_file, "r") as infile:
                 # test_content = infile.read()
