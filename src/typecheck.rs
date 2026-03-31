@@ -346,7 +346,11 @@ fn infer_expr(
                         let arg_ty = infer_expr(arg, Some(param_type), env, ctx)?;
                         ensure_expected(arg, &arg_ty, param_type, ctx)?;
                     }
-                    *return_type
+                    if matches!(&*return_type, Type::Top) {
+                        expected.cloned().unwrap_or(*return_type)
+                    } else {
+                        *return_type
+                    }
                 }
                 _ => return Err(TypeError::ErrorNotAFunction(func_type)),
             }
@@ -542,6 +546,67 @@ fn infer_expr(
             }
 
             match &scrutinee_type {
+                Type::Bool => {
+                    let mut has_true = false;
+                    let mut has_false = false;
+                    for case in cases {
+                        match &case.pattern {
+                            Pattern::True => has_true = true,
+                            Pattern::False => has_false = true,
+                            Pattern::Var(_) => {
+                                has_true = true;
+                                has_false = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !has_true || !has_false {
+                        return Err(TypeError::ErrorNonexhaustiveMatchPatterns);
+                    }
+                }
+                Type::Nat => {
+                    let mut has_zero = false;
+                    let mut has_succ = false;
+                    for case in cases {
+                        match &case.pattern {
+                            Pattern::Int(0) => has_zero = true,
+                            Pattern::Succ(_) => has_succ = true,
+                            Pattern::Var(_) => {
+                                has_zero = true;
+                                has_succ = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !has_zero || !has_succ {
+                        return Err(TypeError::ErrorNonexhaustiveMatchPatterns);
+                    }
+                }
+                Type::List(_) => {
+                    let mut has_empty = false;
+                    let mut has_cons_with_var_tail = false;
+                    let mut has_wildcard = false;
+                    
+                    for case in cases {
+                        match &case.pattern {
+                            Pattern::List(elems) if elems.is_empty() => has_empty = true,
+                            Pattern::Var(_) => {
+                                has_wildcard = true;
+                            }
+                            Pattern::Cons(_, tail) => {
+                                // Check if tail is a variable (covers all non-empty lists)
+                                if matches!(tail.as_ref(), Pattern::Var(_)) {
+                                    has_cons_with_var_tail = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    
+                    if !has_wildcard && !(has_empty && has_cons_with_var_tail) {
+                        return Err(TypeError::ErrorNonexhaustiveMatchPatterns);
+                    }
+                }
                 Type::Sum(_, _) => {
                     if !has_inl || !has_inr {
                         return Err(TypeError::ErrorNonexhaustiveMatchPatterns);
@@ -677,44 +742,52 @@ fn infer_expr(
         //   Every binding MUST carry a PatternAsc (type annotation) so that
         //   the recursive type is known before the RHS is checked.
         Expr::LetRec(bindings, body) => {
-            // Pass 1: collect annotated types and populate env with them
-            //         so that each binding's RHS may refer to itself/others.
             let mut new_env = env.clone();
             let mut binding_expected: Vec<Option<Type>> = Vec::new();
 
+            // Pass 1: seed recursive environment.
             for binding in bindings.iter() {
                 match &binding.pattern {
                     Pattern::Ascription(inner_pat, annotated_ty) => {
-                        // The annotated type is the recursive binding's type.
                         if let Pattern::Var(name) = inner_pat.as_ref() {
                             new_env.insert(name.clone(), annotated_ty.clone());
+                            binding_expected.push(Some(annotated_ty.clone()));
+                        } else {
+                            return Err(TypeError::ErrorAmbiguousPatternType);
                         }
-                        binding_expected.push(Some(annotated_ty.clone()));
                     }
                     Pattern::Var(name) => {
-                        // No annotation — we can still add to env if we can
-                        // infer the type, but for now leave it absent.
-                        // The RHS will be inferred without context.
-                        binding_expected.push(None);
-                        // Note: forward reference won't work here.
-                        let _ = name;
+                        // Unannotated letrec is only inferable for single-lambda RHS.
+                        if let Expr::Abstraction(params, body_expr) = &binding.rhs {
+                            if matches!(body_expr.as_ref(), Expr::Abstraction(_, _)) {
+                                return Err(TypeError::ErrorAmbiguousPatternType);
+                            }
+                            let param_types: Vec<Type> =
+                                params.iter().map(|p| p.type_.clone()).collect();
+                            new_env.insert(name.clone(), Type::Fun(param_types, Box::new(Type::Top)));
+                            binding_expected.push(None);
+                        } else {
+                            return Err(TypeError::ErrorAmbiguousPatternType);
+                        }
                     }
-                    _ => {
-                        binding_expected.push(None);
-                    }
+                    _ => return Err(TypeError::ErrorAmbiguousPatternType),
                 }
             }
 
-            // Pass 2: check each RHS against its annotated type.
+            // Pass 2: infer each binding under the recursive environment.
             for (binding, exp_ty) in bindings.iter().zip(binding_expected.iter()) {
                 let rhs_ty = infer_expr(&binding.rhs, exp_ty.as_ref(), &new_env, ctx)?;
-                if let Some(expected_ty) = exp_ty {
-                    ensure_expected(&binding.rhs, &rhs_ty, expected_ty, ctx)?;
-                } else {
-                    // No annotation: add whatever we inferred.
-                    if let Pattern::Var(name) = &binding.pattern {
+                match &binding.pattern {
+                    Pattern::Ascription(inner_pat, expected_ty) => {
+                        ensure_expected(&binding.rhs, &rhs_ty, expected_ty, ctx)?;
+                        if let Pattern::Var(name) = inner_pat.as_ref() {
+                            new_env.insert(name.clone(), expected_ty.clone());
+                        }
+                    }
+                    Pattern::Var(name) => {
                         new_env.insert(name.clone(), rhs_ty);
                     }
+                    _ => return Err(TypeError::ErrorAmbiguousPatternType),
                 }
             }
 
@@ -1109,6 +1182,24 @@ fn typecheck_pattern_inner(
 
         Pattern::Record(fields) => match expected_type {
             Type::Record(expected_fields) => {
+                // Check that the pattern includes all required fields
+                let pattern_labels: HashSet<String> =
+                    fields.iter().map(|f| f.label.clone()).collect();
+                let expected_labels: HashSet<String> =
+                    expected_fields.iter().map(|f| f.label.clone()).collect();
+                
+                let missing: Vec<String> = expected_labels
+                    .difference(&pattern_labels)
+                    .cloned()
+                    .collect();
+                
+                if !missing.is_empty() {
+                    return Err(TypeError::ErrorUnexpectedPatternForType {
+                        expected: expected_type.clone(),
+                        pattern: format!("{}", pattern),
+                    });
+                }
+                
                 for field_pattern in fields {
                     let expected_field = expected_fields
                         .iter()

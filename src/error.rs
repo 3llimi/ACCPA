@@ -55,6 +55,8 @@ pub enum TypeError {
     // ── #structural-patterns ──────────────────────────────────────────────
     /// a pattern binds the same variable name more than once
     ErrorDuplicatePatternVariable(String),
+    /// cannot infer binding type from pattern without annotation
+    ErrorAmbiguousPatternType,
 
     // ── #nullary-variant-labels ───────────────────────────────────────────
     /// variant expression provides data for a nullary label (NoTyping)
@@ -340,6 +342,12 @@ impl fmt::Display for TypeError {
                     f,
                     "ERROR_DUPLICATE_PATTERN_VARIABLE:\n  Variable '{}' is bound more than once in the same pattern",
                     name
+                )
+            }
+            TypeError::ErrorAmbiguousPatternType => {
+                write!(
+                    f,
+                    "ERROR_AMBIGUOUS_PATTERN_TYPE:\n  Cannot infer type for this pattern without annotation"
                 )
             }
 
