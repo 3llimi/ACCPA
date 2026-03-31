@@ -19,6 +19,7 @@ impl TypeCheckContext {
 // STEP 1: typecheck_program
 //   - Collect top-level function signatures into fn_env
 //   - Parse active extensions into checker context
+//   - Validate main exists, has a function type, and has correct arity
 //   - Collect optional exception type declaration
 //   - Type-check every declaration (first error stops checking)
 pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
@@ -37,8 +38,24 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         }
     }
 
+    // ── main must exist ────────────────────────────────────────────────────
     if !fn_env.contains_key("main") {
         return Err(TypeError::ErrorMissingMain);
+    }
+
+    // ── main must have a function type ────────────────────────────────────
+    match fn_env.get("main") {
+        Some(Type::Fun(_, _)) => {}
+        _ => return Err(TypeError::ErrorIncorrectTypeOfMain),
+    }
+
+    // ── main must have exactly 1 parameter (unless multiparameter enabled) ─
+    //   We always enforce this for Stage 1 core; the optional extension
+    //   ERROR_INCORRECT_ARITY_OF_MAIN supersedes it when extensions are active.
+    if let Some(Type::Fun(params, _)) = fn_env.get("main") {
+        if params.len() != 1 {
+            return Err(TypeError::ErrorIncorrectArityOfMain);
+        }
     }
 
     let mut extensions = HashSet::new();
@@ -107,10 +124,6 @@ fn build_function_type(params: &[ParamDecl], return_type: &Option<Type>) -> Resu
 }
 
 // STEP 2: typecheck_decl
-//   - Validate declared parameter/return types
-//   - Reject illegal local exception type/variant declarations
-//   - Build local environment from params + top-level + local functions
-//   - Check function return expression against declared return type
 fn typecheck_decl(decl: &Decl, fn_env: &HashMap<String, Type>, ctx: &TypeCheckContext) -> Result<(), TypeError> {
     match decl {
         Decl::DeclFun {
@@ -146,7 +159,6 @@ fn typecheck_decl(decl: &Decl, fn_env: &HashMap<String, Type>, ctx: &TypeCheckCo
                 }
             }
 
-            // Local function declarations are in scope for this function body.
             let mut local_fn_env = fn_env.clone();
             for local_decl in local_decls {
                 if let Decl::DeclFun {
@@ -166,8 +178,8 @@ fn typecheck_decl(decl: &Decl, fn_env: &HashMap<String, Type>, ctx: &TypeCheckCo
             for param in param_decls {
                 env.insert(param.name.clone(), param.type_.clone());
             }
-            for (name, ty) in &local_fn_env {
-                env.insert(name.clone(), ty.clone());
+            for (fname, ty) in &local_fn_env {
+                env.insert(fname.clone(), ty.clone());
             }
 
             for local_decl in local_decls {
@@ -193,24 +205,20 @@ fn with_function_context(err: TypeError, function_name: &str) -> TypeError {
         TypeError::ErrorUndefinedVariable(var) => {
             TypeError::ErrorUndefinedVariable(format!("{} [in function {}]", var, function_name))
         }
-        TypeError::ErrorUnexpectedTypeForExpression {
-            expected,
-            found,
-            expr,
-        } => TypeError::ErrorUnexpectedTypeForExpression {
-            expected,
-            found,
-            expr: Some(attach_context(expr, function_name)),
-        },
-        TypeError::ErrorUnexpectedSubtype {
-            expected,
-            found,
-            expr,
-        } => TypeError::ErrorUnexpectedSubtype {
-            expected,
-            found,
-            expr: Some(attach_context(expr, function_name)),
-        },
+        TypeError::ErrorUnexpectedTypeForExpression { expected, found, expr } => {
+            TypeError::ErrorUnexpectedTypeForExpression {
+                expected,
+                found,
+                expr: Some(attach_context(expr, function_name)),
+            }
+        }
+        TypeError::ErrorUnexpectedSubtype { expected, found, expr } => {
+            TypeError::ErrorUnexpectedSubtype {
+                expected,
+                found,
+                expr: Some(attach_context(expr, function_name)),
+            }
+        }
         TypeError::ErrorUnexpectedPatternForType { expected, pattern } => {
             TypeError::ErrorUnexpectedPatternForType {
                 expected,
@@ -229,9 +237,6 @@ fn attach_context(expr: Option<String>, function_name: &str) -> String {
 }
 
 // STEP 3: infer_expr
-//   - Infer expression type bottom-up
-//   - Use expected type as a constraint when provided
-//   - Apply Stage 2 rules (references, panic/exceptions, cast, sequencing)
 fn infer_expr(
     expr: &Expr,
     expected: Option<&Type>,
@@ -241,7 +246,14 @@ fn infer_expr(
     let inferred = match expr {
         Expr::ConstTrue | Expr::ConstFalse => Type::Bool,
         Expr::ConstUnit => Type::Unit,
-        Expr::ConstInt(_) => Type::Nat,
+
+        // ── #natural-literals: reject negative integers ───────────────────
+        Expr::ConstInt(n) => {
+            if *n < 0 {
+                return Err(TypeError::ErrorIllegalNegativeLiteral);
+            }
+            Type::Nat
+        }
 
         Expr::ConstMemory(_) => match expected {
             Some(Type::Ref(inner)) => Type::Ref(inner.clone()),
@@ -280,13 +292,15 @@ fn infer_expr(
             }
         }
 
+        // ── Abstraction ───────────────────────────────────────────────────
         Expr::Abstraction(params, body) => match expected {
             Some(Type::Fun(param_types, return_type)) => {
+                // Wrong number of parameters → specific error, raised before body
                 if params.len() != param_types.len() {
-                    return Err(TypeError::ErrorUnexpectedLambda(Type::Fun(
-                        param_types.clone(),
-                        return_type.clone(),
-                    )));
+                    return Err(TypeError::ErrorUnexpectedNumberOfParametersInLambda {
+                        expected: param_types.len(),
+                        found: params.len(),
+                    });
                 }
 
                 let mut new_env = env.clone();
@@ -316,25 +330,21 @@ fn infer_expr(
             }
         },
 
+        // ── Application ───────────────────────────────────────────────────
         Expr::Application(func, args) => {
             let func_type = infer_expr(func, None, env, ctx)?;
             match func_type {
                 Type::Fun(param_types, return_type) => {
+                    // Wrong argument count → specific error
                     if args.len() != param_types.len() {
-                        return Err(TypeError::ErrorUnexpectedTypeForExpression {
-                            expected: Type::Fun(param_types.clone(), return_type.clone()),
-                            found: Type::Fun(param_types.clone(), return_type.clone()),
-                            expr: Some(format!(
-                                "Function expects {} arguments but got {}",
-                                param_types.len(),
-                                args.len()
-                            )),
+                        return Err(TypeError::ErrorIncorrectNumberOfArguments {
+                            expected: param_types.len(),
+                            found: args.len(),
                         });
                     }
-
                     for (arg, param_type) in args.iter().zip(param_types.iter()) {
-                    let arg_ty = infer_expr(arg, Some(param_type), env, ctx)?;
-                    ensure_expected(arg, &arg_ty, param_type, ctx)?;
+                        let arg_ty = infer_expr(arg, Some(param_type), env, ctx)?;
+                        ensure_expected(arg, &arg_ty, param_type, ctx)?;
                     }
                     *return_type
                 }
@@ -409,7 +419,9 @@ fn infer_expr(
                 if !ctx.has_extension("structural-subtyping") {
                     for binding in bindings {
                         if !expected_fields.iter().any(|f| f.label == binding.name) {
-                            return Err(TypeError::ErrorUnexpectedRecordFields(vec![binding.name.clone()]));
+                            return Err(TypeError::ErrorUnexpectedRecordFields(vec![
+                                binding.name.clone(),
+                            ]));
                         }
                     }
                 }
@@ -502,14 +514,14 @@ fn infer_expr(
 
             for case in cases {
                 // Validate pattern against scrutinee type FIRST.
-                // This catches invalid labels (e.g. number1) before exhaustiveness is checked.
                 let pattern_env = typecheck_pattern(&case.pattern, &scrutinee_type, env)?;
 
-                // Collect coverage info only after the pattern is known to be valid.
                 match &case.pattern {
                     Pattern::Inl(_) => has_inl = true,
                     Pattern::Inr(_) => has_inr = true,
-                    Pattern::Variant(label, _) => { covered_variant_labels.insert(label.clone()); }
+                    Pattern::Variant(label, _) => {
+                        covered_variant_labels.insert(label.clone());
+                    }
                     _ => {}
                 }
 
@@ -519,7 +531,8 @@ fn infer_expr(
                 if let Some(expected_ty) = expected {
                     infer_expr(&case.expr, Some(expected_ty), &case_env, ctx)?;
                 } else {
-                    let case_ty = infer_expr(&case.expr, result_type.as_ref(), &case_env, ctx)?;
+                    let case_ty =
+                        infer_expr(&case.expr, result_type.as_ref(), &case_env, ctx)?;
                     if let Some(acc) = &result_type {
                         ensure_expected(&case.expr, &case_ty, acc, ctx)?;
                     } else {
@@ -528,7 +541,6 @@ fn infer_expr(
                 }
             }
 
-            // Exhaustiveness check runs after all patterns have been validated.
             match &scrutinee_type {
                 Type::Sum(_, _) => {
                     if !has_inl || !has_inr {
@@ -586,7 +598,12 @@ fn infer_expr(
             Some(other) => return Err(TypeError::ErrorUnexpectedList(other.clone())),
             None => {
                 let head_ty = infer_expr(head, None, env, ctx)?;
-                infer_expr(tail, Some(&Type::List(Box::new(head_ty.clone()))), env, ctx)?;
+                infer_expr(
+                    tail,
+                    Some(&Type::List(Box::new(head_ty.clone()))),
+                    env,
+                    ctx,
+                )?;
                 Type::List(Box::new(head_ty))
             }
         },
@@ -615,19 +632,31 @@ fn infer_expr(
             }
         }
 
+        // ── Variant expression ────────────────────────────────────────────
         Expr::Variant(label, opt_expr) => match expected {
             Some(Type::Variant(fields)) => {
                 let field = fields
                     .iter()
                     .find(|f| f.label == *label)
                     .ok_or_else(|| TypeError::ErrorUnexpectedVariantLabel(label.clone()))?;
+
                 match (&field.type_, opt_expr) {
+                    // Both present: check the expression
                     (Some(expected_type), Some(expr)) => {
                         infer_expr(expr, Some(expected_type), env, ctx)?;
                     }
+                    // Both absent: nullary label used correctly
                     (None, None) => {}
-                    _ => return Err(TypeError::ErrorUnexpectedVariantLabel(label.clone())),
+                    // Label is nullary but expression was provided
+                    (None, Some(_)) => {
+                        return Err(TypeError::ErrorUnexpectedDataForNullaryLabel(label.clone()));
+                    }
+                    // Label expects data but none was provided
+                    (Some(_), None) => {
+                        return Err(TypeError::ErrorMissingDataForLabel(label.clone()));
+                    }
                 }
+
                 Type::Variant(fields.clone())
             }
             Some(other) => return Err(TypeError::ErrorUnexpectedVariant(other.clone())),
@@ -641,6 +670,54 @@ fn infer_expr(
                 let pat_env = typecheck_pattern(&binding.pattern, &rhs_ty, &new_env)?;
                 new_env.extend(pat_env);
             }
+            infer_expr(body, expected, &new_env, ctx)?
+        }
+
+        // ── #letrec-bindings ──────────────────────────────────────────────
+        //   Every binding MUST carry a PatternAsc (type annotation) so that
+        //   the recursive type is known before the RHS is checked.
+        Expr::LetRec(bindings, body) => {
+            // Pass 1: collect annotated types and populate env with them
+            //         so that each binding's RHS may refer to itself/others.
+            let mut new_env = env.clone();
+            let mut binding_expected: Vec<Option<Type>> = Vec::new();
+
+            for binding in bindings.iter() {
+                match &binding.pattern {
+                    Pattern::Ascription(inner_pat, annotated_ty) => {
+                        // The annotated type is the recursive binding's type.
+                        if let Pattern::Var(name) = inner_pat.as_ref() {
+                            new_env.insert(name.clone(), *annotated_ty.clone());
+                        }
+                        binding_expected.push(Some(*annotated_ty.clone()));
+                    }
+                    Pattern::Var(name) => {
+                        // No annotation — we can still add to env if we can
+                        // infer the type, but for now leave it absent.
+                        // The RHS will be inferred without context.
+                        binding_expected.push(None);
+                        // Note: forward reference won't work here.
+                        let _ = name;
+                    }
+                    _ => {
+                        binding_expected.push(None);
+                    }
+                }
+            }
+
+            // Pass 2: check each RHS against its annotated type.
+            for (binding, exp_ty) in bindings.iter().zip(binding_expected.iter()) {
+                let rhs_ty = infer_expr(&binding.rhs, exp_ty.as_ref(), &new_env, ctx)?;
+                if let Some(expected_ty) = exp_ty {
+                    ensure_expected(&binding.rhs, &rhs_ty, expected_ty, ctx)?;
+                } else {
+                    // No annotation: add whatever we inferred.
+                    if let Pattern::Var(name) = &binding.pattern {
+                        new_env.insert(name.clone(), rhs_ty);
+                    }
+                }
+            }
+
             infer_expr(body, expected, &new_env, ctx)?
         }
 
@@ -782,8 +859,9 @@ fn infer_expr(
             infer_expr(l, None, env, ctx)?;
             infer_expr(r, None, env, ctx)?;
             match expr {
-                Expr::LogicalAnd(_, _) | Expr::LogicalOr(_, _) => Type::Bool,
-                Expr::LessThan(_, _)
+                Expr::LogicalAnd(_, _)
+                | Expr::LogicalOr(_, _)
+                | Expr::LessThan(_, _)
                 | Expr::LessThanOrEqual(_, _)
                 | Expr::GreaterThan(_, _)
                 | Expr::GreaterThanOrEqual(_, _)
@@ -793,8 +871,7 @@ fn infer_expr(
             }
         }
 
-        Expr::LetRec(_, _)
-        | Expr::TypeAbstraction(_, _)
+        Expr::TypeAbstraction(_, _)
         | Expr::TypeApplication(_, _)
         | Expr::Fold(_, _)
         | Expr::Unfold(_, _)
@@ -815,9 +892,6 @@ fn infer_expr(
 }
 
 // STEP 4: ensure_expected / types_match / is_subtype
-//   - Compare inferred vs expected types
-//   - Use equality by default, or subtyping when extension is enabled
-//   - Raise subtype-specific error when structural-subtyping check fails
 fn ensure_expected(
     expr: &Expr,
     found: &Type,
@@ -831,8 +905,8 @@ fn ensure_expected(
     if let (Type::Variant(found_labels), Type::Variant(expected_labels)) = (found, expected) {
         let missing: Vec<String> = expected_labels
             .iter()
-            .filter(|expected_label| !found_labels.iter().any(|f| f.label == expected_label.label))
-            .map(|label| label.label.clone())
+            .filter(|el| !found_labels.iter().any(|f| f.label == el.label))
+            .map(|el| el.label.clone())
             .collect();
 
         if !missing.is_empty() {
@@ -867,41 +941,34 @@ fn is_subtype(source: &Type, target: &Type) -> bool {
     if source == target {
         return true;
     }
-
     if matches!(target, Type::Top) {
         return true;
     }
-
     if matches!(source, Type::Bottom) {
         return true;
     }
-
     match (source, target) {
         (Type::Fun(s_params, s_ret), Type::Fun(t_params, t_ret)) => {
             if s_params.len() != t_params.len() {
                 return false;
             }
-
             for (s, t) in s_params.iter().zip(t_params.iter()) {
                 if !is_subtype(t, s) {
                     return false;
                 }
             }
-
             is_subtype(s_ret, t_ret)
         }
         (Type::Tuple(s_elems), Type::Tuple(t_elems)) => {
             if t_elems.len() > s_elems.len() {
                 return false;
             }
-            s_elems
-                .iter()
-                .zip(t_elems.iter())
-                .all(|(s, t)| is_subtype(s, t))
+            s_elems.iter().zip(t_elems.iter()).all(|(s, t)| is_subtype(s, t))
         }
         (Type::Record(s_fields), Type::Record(t_fields)) => {
             for target_field in t_fields {
-                let Some(source_field) = s_fields.iter().find(|f| f.label == target_field.label) else {
+                let Some(source_field) = s_fields.iter().find(|f| f.label == target_field.label)
+                else {
                     return false;
                 };
                 if !is_subtype(&source_field.type_, &target_field.type_) {
@@ -912,7 +979,9 @@ fn is_subtype(source: &Type, target: &Type) -> bool {
         }
         (Type::Ref(s_inner), Type::Ref(t_inner)) => s_inner == t_inner,
         (Type::List(s_elem), Type::List(t_elem)) => is_subtype(s_elem, t_elem),
-        (Type::Sum(s_l, s_r), Type::Sum(t_l, t_r)) => is_subtype(s_l, t_l) && is_subtype(s_r, t_r),
+        (Type::Sum(s_l, s_r), Type::Sum(t_l, t_r)) => {
+            is_subtype(s_l, t_l) && is_subtype(s_r, t_r)
+        }
         (Type::Variant(s_labels), Type::Variant(t_labels)) => {
             for s_label in s_labels {
                 let Some(t_label) = t_labels.iter().find(|f| f.label == s_label.label) else {
@@ -935,9 +1004,22 @@ fn is_subtype(source: &Type, target: &Type) -> bool {
 }
 
 // STEP 5: typecheck_pattern
-//   - Check pattern compatibility against expected scrutinee type
-//   - Return bindings introduced by pattern
+//   Checks pattern compatibility and returns new variable bindings.
+//   Duplicate variable detection runs first via check_duplicate_pattern_variables.
 fn typecheck_pattern(
+    pattern: &Pattern,
+    expected_type: &Type,
+    env: &TypeEnv,
+) -> Result<TypeEnv, TypeError> {
+    // ── #structural-patterns: reject duplicate variable names ─────────────
+    check_duplicate_pattern_variables(pattern)?;
+
+    typecheck_pattern_inner(pattern, expected_type, env)
+}
+
+/// Recursive descent that does the actual type-directed pattern checking.
+/// Separated so that duplicate-variable detection only runs at the top level.
+fn typecheck_pattern_inner(
     pattern: &Pattern,
     expected_type: &Type,
     env: &TypeEnv,
@@ -951,7 +1033,7 @@ fn typecheck_pattern(
         }
 
         Pattern::Inl(p) => match expected_type {
-            Type::Sum(left_type, _) => typecheck_pattern(p, left_type, env),
+            Type::Sum(left_type, _) => typecheck_pattern_inner(p, left_type, env),
             _ => Err(TypeError::ErrorUnexpectedPatternForType {
                 expected: expected_type.clone(),
                 pattern: "inl".to_string(),
@@ -959,13 +1041,14 @@ fn typecheck_pattern(
         },
 
         Pattern::Inr(p) => match expected_type {
-            Type::Sum(_, right_type) => typecheck_pattern(p, right_type, env),
+            Type::Sum(_, right_type) => typecheck_pattern_inner(p, right_type, env),
             _ => Err(TypeError::ErrorUnexpectedPatternForType {
                 expected: expected_type.clone(),
                 pattern: "inr".to_string(),
             }),
         },
 
+        // ── Variant pattern with nullary-label error codes ────────────────
         Pattern::Variant(label, opt_pattern) => match expected_type {
             Type::Variant(fields) => {
                 let field = fields
@@ -977,16 +1060,16 @@ fn typecheck_pattern(
                     })?;
 
                 match (&field.type_, opt_pattern) {
-                    (Some(field_ty), Some(pat)) => typecheck_pattern(pat, field_ty, env),
+                    (Some(field_ty), Some(pat)) => typecheck_pattern_inner(pat, field_ty, env),
                     (None, None) => Ok(new_env),
-                    (Some(_), None) => Err(TypeError::ErrorUnexpectedPatternForType {
-                        expected: expected_type.clone(),
-                        pattern: format!("Variant {} should have data", label),
-                    }),
-                    (None, Some(_)) => Err(TypeError::ErrorUnexpectedPatternForType {
-                        expected: expected_type.clone(),
-                        pattern: format!("Variant {} should not have data", label),
-                    }),
+                    // Label is nullary but pattern carries data
+                    (None, Some(_)) => {
+                        Err(TypeError::ErrorUnexpectedNonNullaryVariantPattern(label.clone()))
+                    }
+                    // Label carries data but pattern is nullary
+                    (Some(_), None) => {
+                        Err(TypeError::ErrorUnexpectedNullaryVariantPattern(label.clone()))
+                    }
                 }
             }
             _ => Err(TypeError::ErrorUnexpectedPatternForType {
@@ -1002,7 +1085,7 @@ fn typecheck_pattern(
                     pattern: format!("{}", pattern),
                 });
             }
-            typecheck_pattern(pat, ty, env)
+            typecheck_pattern_inner(pat, ty, env)
         }
 
         Pattern::Tuple(patterns) => match expected_type {
@@ -1013,9 +1096,8 @@ fn typecheck_pattern(
                         pattern: format!("{}", pattern),
                     });
                 }
-
                 for (pat, elem_ty) in patterns.iter().zip(elem_types.iter()) {
-                    new_env.extend(typecheck_pattern(pat, elem_ty, env)?);
+                    new_env.extend(typecheck_pattern_inner(pat, elem_ty, env)?);
                 }
                 Ok(new_env)
             }
@@ -1035,9 +1117,12 @@ fn typecheck_pattern(
                             expected: expected_type.clone(),
                             pattern: format!("{}", pattern),
                         })?;
-
                     if let Some(nested_pattern) = &field_pattern.pattern {
-                        new_env.extend(typecheck_pattern(nested_pattern, &expected_field.type_, env)?);
+                        new_env.extend(typecheck_pattern_inner(
+                            nested_pattern,
+                            &expected_field.type_,
+                            env,
+                        )?);
                     }
                 }
                 Ok(new_env)
@@ -1051,7 +1136,7 @@ fn typecheck_pattern(
         Pattern::List(patterns) => match expected_type {
             Type::List(elem_type) => {
                 for pat in patterns {
-                    new_env.extend(typecheck_pattern(pat, elem_type, env)?);
+                    new_env.extend(typecheck_pattern_inner(pat, elem_type, env)?);
                 }
                 Ok(new_env)
             }
@@ -1063,8 +1148,12 @@ fn typecheck_pattern(
 
         Pattern::Cons(head, tail) => match expected_type {
             Type::List(elem_type) => {
-                new_env.extend(typecheck_pattern(head, elem_type, env)?);
-                new_env.extend(typecheck_pattern(tail, &Type::List(elem_type.clone()), env)?);
+                new_env.extend(typecheck_pattern_inner(head, elem_type, env)?);
+                new_env.extend(typecheck_pattern_inner(
+                    tail,
+                    &Type::List(elem_type.clone()),
+                    env,
+                )?);
                 Ok(new_env)
             }
             _ => Err(TypeError::ErrorUnexpectedPatternForType {
@@ -1091,7 +1180,7 @@ fn typecheck_pattern(
                     pattern: format!("{}", pattern),
                 });
             }
-            typecheck_pattern(inner, &Type::Nat, env)
+            typecheck_pattern_inner(inner, &Type::Nat, env)
         }
 
         Pattern::True | Pattern::False => {
@@ -1119,43 +1208,88 @@ fn typecheck_pattern(
 }
 
 // STEP 6: helpers
-//   - Validate type declarations and detect duplicate fields/labels
+
+/// Walk a pattern tree and report the first variable name that appears twice.
+/// Called once at the top of typecheck_pattern so nested patterns are covered.
+fn check_duplicate_pattern_variables(pattern: &Pattern) -> Result<(), TypeError> {
+    let mut seen = HashSet::new();
+    collect_pattern_variables(pattern, &mut seen)
+}
+
+fn collect_pattern_variables(
+    pattern: &Pattern,
+    seen: &mut HashSet<String>,
+) -> Result<(), TypeError> {
+    match pattern {
+        Pattern::Var(name) => {
+            if !seen.insert(name.clone()) {
+                return Err(TypeError::ErrorDuplicatePatternVariable(name.clone()));
+            }
+            Ok(())
+        }
+        Pattern::Inl(p) | Pattern::Inr(p) | Pattern::Succ(p) => {
+            collect_pattern_variables(p, seen)
+        }
+        Pattern::Variant(_, Some(p)) => collect_pattern_variables(p, seen),
+        Pattern::Variant(_, None) => Ok(()),
+        Pattern::Ascription(p, _) | Pattern::CastAs(p, _) => {
+            collect_pattern_variables(p, seen)
+        }
+        Pattern::Tuple(pats) | Pattern::List(pats) => {
+            for p in pats {
+                collect_pattern_variables(p, seen)?;
+            }
+            Ok(())
+        }
+        Pattern::Record(fields) => {
+            for field in fields {
+                if let Some(p) = &field.pattern {
+                    collect_pattern_variables(p, seen)?;
+                }
+            }
+            Ok(())
+        }
+        Pattern::Cons(head, tail) => {
+            collect_pattern_variables(head, seen)?;
+            collect_pattern_variables(tail, seen)
+        }
+        // Leaf patterns with no variable bindings
+        Pattern::True
+        | Pattern::False
+        | Pattern::Unit
+        | Pattern::Int(_) => Ok(()),
+    }
+}
+
 fn check_type_validity(ty: &Type) -> Result<(), TypeError> {
     match ty {
         Type::Record(fields) => {
             let mut seen = HashSet::new();
             let mut duplicates = Vec::new();
-
             for field in fields {
                 if !seen.insert(&field.label) {
                     duplicates.push(field.label.clone());
                 }
             }
-
             if !duplicates.is_empty() {
                 return Err(TypeError::ErrorDuplicateRecordTypeFields(duplicates));
             }
-
             for field in fields {
                 check_type_validity(&field.type_)?;
             }
             Ok(())
         }
-
         Type::Variant(fields) => {
             let mut seen = HashSet::new();
             let mut duplicates = Vec::new();
-
             for field in fields {
                 if !seen.insert(&field.label) {
                     duplicates.push(field.label.clone());
                 }
             }
-
             if !duplicates.is_empty() {
                 return Err(TypeError::ErrorDuplicateVariantTypeFields(duplicates));
             }
-
             for field in fields {
                 if let Some(field_ty) = &field.type_ {
                     check_type_validity(field_ty)?;
@@ -1163,51 +1297,46 @@ fn check_type_validity(ty: &Type) -> Result<(), TypeError> {
             }
             Ok(())
         }
-
         Type::Fun(params, ret) => {
             for param in params {
                 check_type_validity(param)?;
             }
             check_type_validity(ret)
         }
-
         Type::Tuple(types) => {
             for ty in types {
                 check_type_validity(ty)?;
             }
             Ok(())
         }
-
         Type::List(ty) => check_type_validity(ty),
-
         Type::Sum(left, right) => {
             check_type_validity(left)?;
             check_type_validity(right)
         }
-
         Type::Ref(ty) => check_type_validity(ty),
         Type::Rec(_, ty) => check_type_validity(ty),
         Type::ForAll(_, ty) => check_type_validity(ty),
-
-        Type::Bool | Type::Nat | Type::Unit | Type::Var(_) | Type::Top | Type::Bottom | Type::Auto => {
-            Ok(())
-        }
+        Type::Bool
+        | Type::Nat
+        | Type::Unit
+        | Type::Var(_)
+        | Type::Top
+        | Type::Bottom
+        | Type::Auto => Ok(()),
     }
 }
 
 fn check_duplicate_record_fields(bindings: &[Binding]) -> Result<(), TypeError> {
     let mut seen = HashSet::new();
     let mut duplicates = Vec::new();
-
     for binding in bindings {
         if !seen.insert(&binding.name) {
             duplicates.push(binding.name.clone());
         }
     }
-
     if !duplicates.is_empty() {
         return Err(TypeError::ErrorDuplicateRecordFields(duplicates));
     }
-
     Ok(())
 }
