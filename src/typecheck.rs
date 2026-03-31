@@ -305,7 +305,33 @@ fn infer_expr(
 
                 let mut new_env = env.clone();
                 for (param, expected_param_type) in params.iter().zip(param_types.iter()) {
-                    if &param.type_ != expected_param_type {
+                    if ctx.has_extension("structural-subtyping") {
+                        // Function parameters are contravariant: expected parameter type
+                        // must be a subtype of the lambda annotation.
+                        if !is_subtype(expected_param_type, &param.type_) {
+                            if let (Type::Record(expected_fields), Type::Record(found_fields)) =
+                                (expected_param_type, &param.type_)
+                            {
+                                let missing: Vec<String> = found_fields
+                                    .iter()
+                                    .filter(|f| {
+                                        !expected_fields.iter().any(|ef| ef.label == f.label)
+                                    })
+                                    .map(|f| f.label.clone())
+                                    .collect();
+
+                                if !missing.is_empty() {
+                                    return Err(TypeError::ErrorMissingRecordFields(missing));
+                                }
+                            }
+
+                            return Err(TypeError::ErrorUnexpectedSubtype {
+                                expected: param.type_.clone(),
+                                found: expected_param_type.clone(),
+                                expr: Some(format!("{}", expr)),
+                            });
+                        }
+                    } else if &param.type_ != expected_param_type {
                         return Err(TypeError::ErrorUnexpectedTypeForParameter {
                             expected: expected_param_type.clone(),
                             found: param.type_.clone(),
@@ -316,7 +342,9 @@ fn infer_expr(
 
                 let body_ty = infer_expr(body, Some(return_type), &new_env, ctx)?;
                 ensure_expected(body, &body_ty, return_type, ctx)?;
-                Type::Fun(param_types.clone(), return_type.clone())
+                let declared_param_types: Vec<Type> =
+                    params.iter().map(|p| p.type_.clone()).collect();
+                Type::Fun(declared_param_types, Box::new(body_ty))
             }
             Some(other) => return Err(TypeError::ErrorUnexpectedLambda(other.clone())),
             None => {
@@ -836,7 +864,8 @@ fn infer_expr(
         },
 
         Expr::Dereference(e) => {
-            let t = infer_expr(e, None, env, ctx)?;
+            let expected_ref_type = expected.map(|ty| Type::Ref(Box::new(ty.clone())));
+            let t = infer_expr(e, expected_ref_type.as_ref(), env, ctx)?;
             match t {
                 Type::Ref(inner) => *inner,
                 _ => return Err(TypeError::ErrorNotAReference(t)),
@@ -884,14 +913,24 @@ fn infer_expr(
         }
 
         Expr::TryWith(try_expr, with_expr) => {
-            let exn_ty = ctx
+            let _exn_ty = ctx
                 .exception_type
                 .as_ref()
                 .ok_or(TypeError::ErrorExceptionTypeNotDeclared)?;
-            let try_ty = infer_expr(try_expr, expected, env, ctx)?;
-            let with_ty = Type::Fun(vec![exn_ty.clone()], Box::new(try_ty.clone()));
-            infer_expr(with_expr, Some(&with_ty), env, ctx)?;
-            try_ty
+
+            match expected {
+                Some(expected_ty) => {
+                    infer_expr(try_expr, Some(expected_ty), env, ctx)?;
+                    infer_expr(with_expr, Some(expected_ty), env, ctx)?;
+                    expected_ty.clone()
+                }
+                None => {
+                    let try_ty = infer_expr(try_expr, None, env, ctx)?;
+                    let with_ty = infer_expr(with_expr, Some(&try_ty), env, ctx)?;
+                    ensure_expected(with_expr, &with_ty, &try_ty, ctx)?;
+                    try_ty
+                }
+            }
         }
 
         Expr::TryCatch(try_expr, pattern, catch_expr) => {
@@ -905,6 +944,49 @@ fn infer_expr(
             let catch_ty = infer_expr(catch_expr, Some(&try_ty), &env2, ctx)?;
             ensure_expected(catch_expr, &catch_ty, &try_ty, ctx)?;
             try_ty
+        }
+
+        Expr::TryCastAs {
+            try_,
+            to,
+            casted_pattern,
+            casted_arm,
+            fallback_arm,
+        } => {
+            let try_ty = infer_expr(try_, None, env, ctx)?;
+
+            if ctx.has_extension("structural-subtyping") {
+                if !is_subtype(to, &try_ty) {
+                    return Err(TypeError::ErrorUnexpectedSubtype {
+                        expected: try_ty,
+                        found: to.clone(),
+                        expr: Some(format!("{}", expr)),
+                    });
+                }
+            } else if to != &try_ty {
+                return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                    expected: try_ty,
+                    found: to.clone(),
+                    expr: Some(format!("{}", expr)),
+                });
+            }
+
+            let mut casted_env = env.clone();
+            casted_env.extend(typecheck_pattern(casted_pattern, to, env)?);
+
+            match expected {
+                Some(expected_ty) => {
+                    infer_expr(casted_arm, Some(expected_ty), &casted_env, ctx)?;
+                    infer_expr(fallback_arm, Some(expected_ty), env, ctx)?;
+                    expected_ty.clone()
+                }
+                None => {
+                    let casted_ty = infer_expr(casted_arm, None, &casted_env, ctx)?;
+                    let fallback_ty = infer_expr(fallback_arm, Some(&casted_ty), env, ctx)?;
+                    ensure_expected(fallback_arm, &fallback_ty, &casted_ty, ctx)?;
+                    casted_ty
+                }
+            }
         }
 
         Expr::TypeCast(e, target_type) => {
@@ -947,8 +1029,7 @@ fn infer_expr(
         Expr::TypeAbstraction(_, _)
         | Expr::TypeApplication(_, _)
         | Expr::Fold(_, _)
-        | Expr::Unfold(_, _)
-        | Expr::TryCastAs { .. } => {
+        | Expr::Unfold(_, _) => {
             return Err(TypeError::ErrorUnexpectedTypeForExpression {
                 expected: Type::Bottom,
                 found: Type::Bottom,
@@ -1151,8 +1232,18 @@ fn typecheck_pattern_inner(
             }),
         },
 
-        Pattern::Ascription(pat, ty) | Pattern::CastAs(pat, ty) => {
+        Pattern::Ascription(pat, ty) => {
             if ty != expected_type {
+                return Err(TypeError::ErrorUnexpectedPatternForType {
+                    expected: expected_type.clone(),
+                    pattern: format!("{}", pattern),
+                });
+            }
+            typecheck_pattern_inner(pat, ty, env)
+        }
+
+        Pattern::CastAs(pat, ty) => {
+            if !is_subtype(ty, expected_type) {
                 return Err(TypeError::ErrorUnexpectedPatternForType {
                     expected: expected_type.clone(),
                     pattern: format!("{}", pattern),
