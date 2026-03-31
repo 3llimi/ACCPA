@@ -687,9 +687,9 @@ fn infer_expr(
                     Pattern::Ascription(inner_pat, annotated_ty) => {
                         // The annotated type is the recursive binding's type.
                         if let Pattern::Var(name) = inner_pat.as_ref() {
-                            new_env.insert(name.clone(), *annotated_ty.clone());
+                            new_env.insert(name.clone(), annotated_ty.clone());
                         }
-                        binding_expected.push(Some(*annotated_ty.clone()));
+                        binding_expected.push(Some(annotated_ty.clone()));
                     }
                     Pattern::Var(name) => {
                         // No annotation — we can still add to env if we can
