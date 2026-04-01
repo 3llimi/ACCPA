@@ -3,7 +3,7 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeError {
-    // ── Core ──────────────────────────────────────────────────────────────────
+    // Core
     ErrorMissingMain,
     ErrorIncorrectTypeOfMain,
     ErrorUndefinedVariable(String),
@@ -44,7 +44,7 @@ pub enum TypeError {
     ErrorDuplicateRecordTypeFields(Vec<String>),
     ErrorDuplicateVariantTypeFields(Vec<String>),
 
-    // ── #multiparameter-functions / #nullary-functions ─────────────────────
+    // #multiparameter-functions / #nullary-functions
     /// main is declared with n ≠ 1 parameters
     ErrorIncorrectArityOfMain,
     /// function call made with wrong number of arguments
@@ -52,13 +52,13 @@ pub enum TypeError {
     /// anonymous function has wrong number of parameters for the expected type
     ErrorUnexpectedNumberOfParametersInLambda { expected: usize, found: usize },
 
-    // ── #structural-patterns ──────────────────────────────────────────────
+    // #structural-patterns
     /// a pattern binds the same variable name more than once
     ErrorDuplicatePatternVariable(String),
     /// cannot infer binding type from pattern without annotation
     ErrorAmbiguousPatternType,
 
-    // ── #nullary-variant-labels ───────────────────────────────────────────
+    // #nullary-variant-labels
     /// variant expression provides data for a nullary label (NoTyping)
     ErrorUnexpectedDataForNullaryLabel(String),
     /// variant expression omits data for a label that expects it (SomeTyping)
@@ -68,7 +68,7 @@ pub enum TypeError {
     /// variant pattern omits data for a label that carries data
     ErrorUnexpectedNullaryVariantPattern(String),
 
-    // ── Exceptions / references / subtyping (Stage 2+) ───────────────────
+    // Exceptions / references / subtyping
     ErrorDuplicateExceptionType,
     ErrorDuplicateExceptionVariant(String),
     ErrorConflictingExceptionDeclarations,
@@ -91,7 +91,7 @@ pub enum TypeError {
 impl fmt::Display for TypeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            // ── Core ──────────────────────────────────────────────────────
+            // Core
             TypeError::ErrorMissingMain => {
                 write!(f, "ERROR_MISSING_MAIN:\n  No main function defined")
             }
@@ -336,7 +336,7 @@ impl fmt::Display for TypeError {
                 )
             }
 
-            // ── #structural-patterns ────────────────────────────────────
+            // #structural-patterns
             TypeError::ErrorDuplicatePatternVariable(name) => {
                 write!(
                     f,
@@ -351,7 +351,7 @@ impl fmt::Display for TypeError {
                 )
             }
 
-            // ── #nullary-variant-labels ──────────────────────────────────
+            // #nullary-variant-labels
             TypeError::ErrorUnexpectedDataForNullaryLabel(label) => {
                 write!(
                     f,
@@ -381,7 +381,7 @@ impl fmt::Display for TypeError {
                 )
             }
 
-            // ── Stage 2+ ────────────────────────────────────────────────
+            // exceptions / references / subtyping
             TypeError::ErrorDuplicateExceptionType => write!(
                 f,
                 "ERROR_DUPLICATE_EXCEPTION_TYPE:\n  More than one exception type declaration in the same scope"

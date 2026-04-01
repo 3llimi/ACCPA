@@ -38,19 +38,18 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         }
     }
 
-    // ── main must exist ────────────────────────────────────────────────────
+    // main must exist
     if !fn_env.contains_key("main") {
         return Err(TypeError::ErrorMissingMain);
     }
 
-    // ── main must have a function type ────────────────────────────────────
+    //  main must have a function type 
     match fn_env.get("main") {
         Some(Type::Fun(_, _)) => {}
         _ => return Err(TypeError::ErrorIncorrectTypeOfMain),
     }
 
-    // ── main must have exactly 1 parameter (unless multiparameter enabled) ─
-    //   We always enforce this for Stage 1 core; the optional extension
+    //  main must have exactly 1 parameter (unless multiparameter enabled) 
     //   ERROR_INCORRECT_ARITY_OF_MAIN supersedes it when extensions are active.
     if let Some(Type::Fun(params, _)) = fn_env.get("main") {
         if params.len() != 1 {
@@ -247,7 +246,7 @@ fn infer_expr(
         Expr::ConstTrue | Expr::ConstFalse => Type::Bool,
         Expr::ConstUnit => Type::Unit,
 
-        // ── #natural-literals: reject negative integers ───────────────────
+        //  #natural-literals: reject negative integers 
         Expr::ConstInt(n) => {
             if *n < 0 {
                 return Err(TypeError::ErrorIllegalNegativeLiteral);
@@ -292,7 +291,7 @@ fn infer_expr(
             }
         }
 
-        // ── Abstraction ───────────────────────────────────────────────────
+        //  Abstraction 
         Expr::Abstraction(params, body) => match expected {
             Some(Type::Fun(param_types, return_type)) => {
                 // Wrong number of parameters → specific error, raised before body
@@ -358,7 +357,7 @@ fn infer_expr(
             }
         },
 
-        // ── Application ───────────────────────────────────────────────────
+        //  Application 
         Expr::Application(func, args) => {
             let func_type = infer_expr(func, None, env, ctx)?;
             match func_type {
@@ -725,13 +724,13 @@ fn infer_expr(
             }
         }
 
-        // ── Variant expression ────────────────────────────────────────────
+        // Variant expression 
         Expr::Variant(label, opt_expr) => match expected {
             Some(Type::Variant(fields)) => {
                 let field = fields
                     .iter()
                     .find(|f| f.label == *label)
-                    .ok_or_else(|| TypeError::ErrorUnexpectedVariantLabel(label.clone()))?;
+                    .ok_or_else(|| TypeError::ErrorUndefinedVariable(label.clone()))?;
 
                 match (&field.type_, opt_expr) {
                     // Both present: check the expression
@@ -752,7 +751,7 @@ fn infer_expr(
 
                 Type::Variant(fields.clone())
             }
-            Some(other) => return Err(TypeError::ErrorUnexpectedVariant(other.clone())),
+            Some(_) => return Err(TypeError::ErrorUndefinedVariable(label.clone())),
             None => return Err(TypeError::ErrorAmbiguousVariantType),
         },
 
@@ -766,7 +765,7 @@ fn infer_expr(
             infer_expr(body, expected, &new_env, ctx)?
         }
 
-        // ── #letrec-bindings ──────────────────────────────────────────────
+        //  #letrec-bindings 
         //   Every binding MUST carry a PatternAsc (type annotation) so that
         //   the recursive type is known before the RHS is checked.
         Expr::LetRec(bindings, body) => {
@@ -1165,7 +1164,7 @@ fn typecheck_pattern(
     expected_type: &Type,
     env: &TypeEnv,
 ) -> Result<TypeEnv, TypeError> {
-    // ── #structural-patterns: reject duplicate variable names ─────────────
+    //  #structural-patterns: reject duplicate variable names 
     check_duplicate_pattern_variables(pattern)?;
 
     typecheck_pattern_inner(pattern, expected_type, env)
@@ -1202,7 +1201,7 @@ fn typecheck_pattern_inner(
             }),
         },
 
-        // ── Variant pattern with nullary-label error codes ────────────────
+        //  Variant pattern with nullary-label error codes 
         Pattern::Variant(label, opt_pattern) => match expected_type {
             Type::Variant(fields) => {
                 let field = fields
