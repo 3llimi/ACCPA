@@ -730,7 +730,7 @@ fn infer_expr(
                 let field = fields
                     .iter()
                     .find(|f| f.label == *label)
-                    .ok_or_else(|| TypeError::ErrorUndefinedVariable(label.clone()))?;
+                    .ok_or_else(|| TypeError::ErrorUnexpectedVariantLabel(label.clone()))?;
 
                 match (&field.type_, opt_expr) {
                     // Both present: check the expression
@@ -751,7 +751,7 @@ fn infer_expr(
 
                 Type::Variant(fields.clone())
             }
-            Some(_) => return Err(TypeError::ErrorUndefinedVariable(label.clone())),
+            Some(other) => return Err(TypeError::ErrorUnexpectedVariant(other.clone())),
             None => return Err(TypeError::ErrorAmbiguousVariantType),
         },
 
