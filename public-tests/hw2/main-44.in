@@ -7,7 +7,7 @@ extend with #exceptions,
             #bottom-type,
             #structural-subtyping;
 
-exception type = Nat
+exception type = Bool
 
 fn main(n : Nat) -> Top {
   return throw(true)
