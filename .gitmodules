@@ -1,4 +1,3 @@
-
 [submodule "public-tests"]
 	path = public-tests
 	url = git@gitlab.pg.innopolis.university:accpa-2026/tests/public-tests.git

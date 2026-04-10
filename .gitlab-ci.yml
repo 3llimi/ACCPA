@@ -19,3 +19,4 @@ public_tests:
     paths:
       - reports/public_hw1.json
       - solution/student_hw1_image.tar
+      

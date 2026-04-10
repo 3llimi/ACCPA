@@ -47,10 +47,10 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.homework }}" ]]; then
             echo "hw_num=${{ github.event.inputs.homework }}" >> "$GITHUB_OUTPUT"
           elif [[ "${GITHUB_REF_NAME}" =~ ^hw([0-9]+)$ ]]; then
-            echo "hw_num=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "hw_num=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
           else
-            # On main branch runs, default to hw1 unless manually overridden.
-            echo "hw_num=1" >> "$GITHUB_OUTPUT"
+            # On main branch runs, default to hw2 unless manually overridden.
+            echo "hw_num=2" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run ACCPA pipeline
