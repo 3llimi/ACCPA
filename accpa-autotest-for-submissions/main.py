@@ -19,9 +19,9 @@ def entrypoint():
 
     hw_name = f"hw{args.homework}"
     print(f"Homework selected: {hw_name}")
-    
+
     run_student_pipeline(hw_name)
+
 
 if __name__ == "__main__":
     entrypoint()
-

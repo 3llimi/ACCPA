@@ -11,7 +11,7 @@ def print_report(homework, results, submission_time, duration, save_json=None):
     print(f"Duration: {duration:.2f}s")
     print(f"Submission time: {submission_time}")
     print("-" * 50)
-    
+
     main_total = 0
     main_passed = 0
     extra_total = 0

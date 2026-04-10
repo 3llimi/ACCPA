@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug typechecker (tmp.stella)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build",
+          "--bin",
+          "typechecker"
+        ],
+        "filter": {
+          "name": "typechecker",
+          "kind": "bin"
+        }
+      },
+      "args": [
+        "tmp.stella"
+      ],
+      "cwd": "${workspaceFolder}",
+      "sourceLanguages": [
+        "rust"
+      ]
+    }
+  ]
+}

@@ -25,6 +25,8 @@ impl TypeCheckContext {
 pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
     let mut fn_env: HashMap<String, Type> = HashMap::new();
 
+    // #exceptions + #open-variant-exceptions:
+    // collect either a single declared exception type or open variant labels.
     for decl in &program.decls {
         if let Decl::DeclFun {
             name,
@@ -97,10 +99,12 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         }
     }
 
+    // #open-variant-exceptions: these two declaration styles cannot be mixed.
     if seen_exception_type && !exception_variants.is_empty() {
         return Err(TypeError::ErrorConflictingExceptionDeclarations);
     }
 
+    // #open-variant-exceptions: open exception labels synthesize a Variant exn type.
     if ctx.exception_type.is_none() && !exception_variants.is_empty() {
         ctx.exception_type = Some(Type::Variant(exception_variants));
     }
@@ -304,6 +308,7 @@ fn infer_expr(
 
                 let mut new_env = env.clone();
                 for (param, expected_param_type) in params.iter().zip(param_types.iter()) {
+                    // #structural-subtyping: lambda parameter checking is contravariant.
                     if ctx.has_extension("structural-subtyping") {
                         // Function parameters are contravariant: expected parameter type
                         // must be a subtype of the lambda annotation.
@@ -499,6 +504,8 @@ fn infer_expr(
             ty.clone()
         }
 
+        // #ambiguous-type-as-bottom: without an expected sum type, this extension
+        // permits the missing side to be treated as Bottom.
         Expr::Inl(e) => match expected {
             Some(Type::Sum(left_type, right_type)) => {
                 infer_expr(e, Some(left_type), env, ctx)?;
@@ -515,6 +522,7 @@ fn infer_expr(
             }
         },
 
+        // #ambiguous-type-as-bottom: symmetric rule for right injection.
         Expr::Inr(e) => match expected {
             Some(Type::Sum(left_type, right_type)) => {
                 infer_expr(e, Some(right_type), env, ctx)?;
@@ -845,11 +853,13 @@ fn infer_expr(
             }
         }
 
+        // #sequencing: first expression must be Unit, result is the second expression.
         Expr::Sequence(e1, e2) => {
             infer_expr(e1, Some(&Type::Unit), env, ctx)?;
             infer_expr(e2, expected, env, ctx)?
         }
 
+        // #references: allocate and track Ref(inner) types.
         Expr::Reference(e) => match expected {
             Some(Type::Ref(inner)) => {
                 let found_inner = infer_expr(e, Some(inner), env, ctx)?;
@@ -862,6 +872,7 @@ fn infer_expr(
             }
         },
 
+        // #references: dereference requires Ref(t) and returns t.
         Expr::Dereference(e) => {
             let expected_ref_type = expected.map(|ty| Type::Ref(Box::new(ty.clone())));
             let t = infer_expr(e, expected_ref_type.as_ref(), env, ctx)?;
@@ -871,6 +882,7 @@ fn infer_expr(
             }
         }
 
+        // #references: assignment requires a Ref(lhs_type), checks rhs against lhs_type.
         Expr::Assignment(lhs, rhs) => {
             let t = infer_expr(lhs, None, env, ctx)?;
             match t {
@@ -882,6 +894,8 @@ fn infer_expr(
             }
         }
 
+        // #panic: polymorphic when expected type is known; otherwise ambiguous unless
+        // #ambiguous-type-as-bottom is active.
         Expr::Panic => match expected {
             Some(t) => t.clone(),
             None => {
@@ -893,6 +907,8 @@ fn infer_expr(
             }
         },
 
+        // #exceptions: thrown value must match the declared exception type.
+        // Same ambiguity behavior as panic when no expected type is available.
         Expr::Throw(e) => {
             let exn_ty = ctx
                 .exception_type
@@ -911,6 +927,7 @@ fn infer_expr(
             }
         }
 
+        // #exceptions: both try and handler expressions must agree on result type.
         Expr::TryWith(try_expr, with_expr) => {
             let _exn_ty = ctx
                 .exception_type
@@ -932,6 +949,7 @@ fn infer_expr(
             }
         }
 
+        // #exceptions: catch pattern is checked against the declared exception type.
         Expr::TryCatch(try_expr, pattern, catch_expr) => {
             let exn_ty = ctx
                 .exception_type
@@ -945,6 +963,8 @@ fn infer_expr(
             try_ty
         }
 
+        // #try-cast-as (dynamic cast): check cast target compatibility, then type both
+        // casted and fallback branches to a common result.
         Expr::TryCastAs {
             try_,
             to,
@@ -988,6 +1008,7 @@ fn infer_expr(
             }
         }
 
+        // #type-cast: explicit cast expression; result type is the target annotation.
         Expr::TypeCast(e, target_type) => {
             infer_expr(e, None, env, ctx)?;
             target_type.clone()
@@ -1083,6 +1104,7 @@ fn ensure_expected(
 }
 
 fn types_match(found: &Type, expected: &Type, ctx: &TypeCheckContext) -> bool {
+    // #structural-subtyping: toggles matching from equality to subtype checking.
     if ctx.has_extension("structural-subtyping") {
         is_subtype(found, expected)
     } else {
@@ -1091,12 +1113,15 @@ fn types_match(found: &Type, expected: &Type, ctx: &TypeCheckContext) -> bool {
 }
 
 fn is_subtype(source: &Type, target: &Type) -> bool {
+    // Top and Bottom types: Top is the universal supertype and Bottom the universal subtype.
     if source == target {
         return true;
     }
+    // Top accepts every type.
     if matches!(target, Type::Top) {
         return true;
     }
+    // Bottom is accepted by every target type.
     if matches!(source, Type::Bottom) {
         return true;
     }
@@ -1241,6 +1266,8 @@ fn typecheck_pattern_inner(
             typecheck_pattern_inner(pat, ty, env)
         }
 
+        // #type-cast-patterns: pattern cast is valid only when cast type is a
+        // subtype of the expected scrutinee type.
         Pattern::CastAs(pat, ty) => {
             if !is_subtype(ty, expected_type) {
                 return Err(TypeError::ErrorUnexpectedPatternForType {
