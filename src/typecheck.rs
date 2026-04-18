@@ -107,9 +107,8 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
     };
     ctx.type_reconstruction_enabled = ctx.has_extension("type-reconstruction");
     // Ambiguous-type reporting is relevant during reconstruction.
-    // Also keep support for an explicit strict toggle outside reconstruction.
-    ctx.strict_ambiguous_type_errors_enabled =
-        ctx.type_reconstruction_enabled || ctx.has_extension("strict-ambiguous-type-errors");
+    // #type-reconstruction mode unless an explicit strict toggle is requested.
+    ctx.strict_ambiguous_type_errors_enabled = ctx.has_extension("strict-ambiguous-type-errors");
     ctx.universal_types_enabled = ctx.has_extension("universal-types");
 
     let rewritten_program = if ctx.type_reconstruction_enabled {
@@ -139,6 +138,17 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
                 return_type,
                 ..
             } => {
+                if !ctx.universal_types_enabled {
+                    return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                        expected: Type::Top,
+                        found: Type::ForAll(
+                            generics.clone(),
+                            Box::new(build_function_type(param_decls, return_type)),
+                        ),
+                        expr: None,
+                    });
+                }
+
                 if let Some(dup) = find_duplicate_name(generics) {
                     return Err(TypeError::ErrorDuplicateTypeParameter(dup));
                 }
@@ -755,6 +765,17 @@ fn typecheck_decl(
             return_expr,
             ..
         } => {
+            if !ctx.universal_types_enabled {
+                return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                    expected: Type::Top,
+                    found: Type::ForAll(
+                        generics.clone(),
+                        Box::new(build_function_type(param_decls, return_type)),
+                    ),
+                    expr: None,
+                });
+            }
+
             if let Some(dup) = find_duplicate_name(generics) {
                 return Err(with_function_context(
                     TypeError::ErrorDuplicateTypeParameter(dup),
@@ -847,6 +868,20 @@ fn typecheck_fun_decl(
                 return_type: local_return_type,
                 ..
             } => {
+                if !ctx.universal_types_enabled {
+                    return Err(with_function_context(
+                        TypeError::ErrorUnexpectedTypeForExpression {
+                            expected: Type::Top,
+                            found: Type::ForAll(
+                                generics.clone(),
+                                Box::new(build_function_type(local_params, local_return_type)),
+                            ),
+                            expr: None,
+                        },
+                        name,
+                    ));
+                }
+
                 if let Some(dup) = find_duplicate_name(generics) {
                     return Err(with_function_context(
                         TypeError::ErrorDuplicateTypeParameter(dup),
@@ -3219,6 +3254,14 @@ fn check_type_validity(
             check_type_validity(ty, &next_scope, ctx)
         }
         Type::ForAll(vars, ty) => {
+            if !ctx.universal_types_enabled {
+                return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                    expected: Type::Top,
+                    found: Type::ForAll(vars.clone(), ty.clone()),
+                    expr: None,
+                });
+            }
+
             let mut next_scope = type_scope.clone();
             if let Some(dup) = find_duplicate_name(vars) {
                 return Err(TypeError::ErrorDuplicateTypeParameter(dup));
@@ -3239,8 +3282,18 @@ fn check_type_validity(
         | Type::Nat
         | Type::Unit
         | Type::Top
-        | Type::Bottom
-        | Type::Auto => Ok(()),
+        | Type::Bottom => Ok(()),
+        Type::Auto => {
+            if ctx.type_reconstruction_enabled {
+                Ok(())
+            } else {
+                Err(TypeError::ErrorUnexpectedTypeForExpression {
+                    expected: Type::Top,
+                    found: Type::Auto,
+                    expr: None,
+                })
+            }
+        }
     }
 }
 
