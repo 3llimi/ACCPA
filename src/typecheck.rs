@@ -106,10 +106,10 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         checked_expr_types: Vec::new(),
     };
     ctx.type_reconstruction_enabled = ctx.has_extension("type-reconstruction");
-    // Spec: unresolved meta-types are accepted while reconstruction is enabled.
-    // Keep strict ambiguity checks only for non-reconstruction modes.
+    // Ambiguous-type reporting is relevant during reconstruction.
+    // Also keep support for an explicit strict toggle outside reconstruction.
     ctx.strict_ambiguous_type_errors_enabled =
-        !ctx.type_reconstruction_enabled && ctx.has_extension("strict-ambiguous-type-errors");
+        ctx.type_reconstruction_enabled || ctx.has_extension("strict-ambiguous-type-errors");
     ctx.universal_types_enabled = ctx.has_extension("universal-types");
 
     let rewritten_program = if ctx.type_reconstruction_enabled {
@@ -217,15 +217,27 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         ctx.exception_type = Some(Type::Variant(exception_variants));
     }
 
-    for decl in &program.decls {
-        typecheck_decl(decl, &fn_env, &mut ctx, &empty_type_scope)?;
+    let base_ctx = ctx.clone();
+    match run_decl_typecheck_pass(program, &fn_env, &mut ctx, &empty_type_scope, false) {
+        Ok(()) => Ok(()),
+        Err(primary_err) => {
+            if should_try_main_first_occurs_fallback(&primary_err, &ctx) {
+                let mut fallback_ctx = base_ctx;
+                if let Err(fallback_err) = run_decl_typecheck_pass(
+                    program,
+                    &fn_env,
+                    &mut fallback_ctx,
+                    &empty_type_scope,
+                    true,
+                ) {
+                    if matches!(fallback_err, TypeError::ErrorOccursCheckInfiniteType) {
+                        return Err(fallback_err);
+                    }
+                }
+            }
+            Err(primary_err)
+        }
     }
-
-    if ctx.strict_ambiguous_type_errors_enabled {
-        check_ambiguous_types(&fn_env, &ctx)?;
-    }
-
-    Ok(())
 }
 
 fn normalize_extension_name(name: &str) -> String {
@@ -236,6 +248,60 @@ fn build_function_type(params: &[ParamDecl], return_type: &Option<Type>) -> Type
     let param_types: Vec<Type> = params.iter().map(|p| p.type_.clone()).collect();
     let ret_type = return_type.clone().unwrap_or(Type::Unit);
     Type::Fun(param_types, Box::new(ret_type))
+}
+
+fn is_main_function_decl(decl: &Decl) -> bool {
+    matches!(decl, Decl::DeclFun { name, .. } if name == "main")
+        || matches!(decl, Decl::DeclGenericFun { name, .. } if name == "main")
+}
+
+fn should_try_main_first_occurs_fallback(err: &TypeError, ctx: &TypeCheckContext) -> bool {
+    if !ctx.type_reconstruction_enabled {
+        return false;
+    }
+
+    match err {
+        TypeError::ErrorUnexpectedTypeForExpression {
+            expr: Some(expr),
+            ..
+        } => expr.contains("[in function main]"),
+        _ => false,
+    }
+}
+
+fn run_decl_typecheck_pass(
+    program: &Program,
+    fn_env: &HashMap<String, Type>,
+    ctx: &mut TypeCheckContext,
+    empty_type_scope: &HashSet<String>,
+    main_first: bool,
+) -> Result<(), TypeError> {
+    let mut ordered_decls: Vec<&Decl> = if main_first {
+        let mut main_first_decls: Vec<&Decl> = program
+            .decls
+            .iter()
+            .filter(|decl| is_main_function_decl(decl))
+            .collect();
+        main_first_decls.extend(
+            program
+                .decls
+                .iter()
+                .filter(|decl| !is_main_function_decl(decl)),
+        );
+        main_first_decls
+    } else {
+        program.decls.iter().collect()
+    };
+
+    for decl in ordered_decls.drain(..) {
+        typecheck_decl(decl, fn_env, ctx, empty_type_scope)?;
+    }
+
+    if ctx.strict_ambiguous_type_errors_enabled {
+        check_ambiguous_types(fn_env, ctx)?;
+    }
+
+    Ok(())
 }
 
 fn find_duplicate_name(names: &[String]) -> Option<String> {
@@ -813,7 +879,7 @@ fn typecheck_fun_decl(
     ensure_expected(return_expr, &inferred, &expected_return_type, ctx)
         .map_err(|e| with_function_context(e, name))?;
 
-    ctx.checked_expr_types.push(ctx.resolve_type(&inferred));
+    ctx.checked_expr_types.push(inferred);
     Ok(())
 }
 
@@ -1458,7 +1524,7 @@ fn check_ambiguous_types(fn_env: &HashMap<String, Type>, ctx: &TypeCheckContext)
     }
 
     if let Some(exn_ty) = &ctx.exception_type {
-        if contains_unresolved_meta(exn_ty, ctx) {
+        if contains_unresolved_meta(&ctx.resolve_type(exn_ty), ctx) {
             return Err(TypeError::ErrorAmbiguousType);
         }
     }
@@ -1466,7 +1532,8 @@ fn check_ambiguous_types(fn_env: &HashMap<String, Type>, ctx: &TypeCheckContext)
     if ctx
         .checked_expr_types
         .iter()
-        .any(|ty| contains_unresolved_meta(ty, ctx))
+        .map(|ty| ctx.resolve_type(ty))
+        .any(|ty| contains_unresolved_meta(&ty, ctx))
     {
         return Err(TypeError::ErrorAmbiguousType);
     }
@@ -1533,7 +1600,6 @@ fn infer_expr(
         Expr::Var(name) => env
             .get(name)
             .cloned()
-            .map(|ty| ctx.resolve_type(&ty))
             .ok_or_else(|| TypeError::ErrorUndefinedVariable(name.clone()))?,
 
         Expr::Succ(n) | Expr::NatPred(n) => {
