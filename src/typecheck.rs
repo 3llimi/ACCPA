@@ -106,9 +106,10 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         checked_expr_types: Vec::new(),
     };
     ctx.type_reconstruction_enabled = ctx.has_extension("type-reconstruction");
-    // Optional strict mode: keep ERROR_AMBIGUOUS_TYPE disabled unless explicitly requested.
+    // Under type reconstruction, unresolved meta-types are always reported.
+    // An optional extension can still force this check if needed in other modes.
     ctx.strict_ambiguous_type_errors_enabled =
-        ctx.has_extension("strict-ambiguous-type-errors");
+        ctx.type_reconstruction_enabled || ctx.has_extension("strict-ambiguous-type-errors");
     ctx.universal_types_enabled = ctx.has_extension("universal-types");
 
     let rewritten_program = if ctx.type_reconstruction_enabled {
@@ -1465,7 +1466,8 @@ fn check_ambiguous_types(fn_env: &HashMap<String, Type>, ctx: &TypeCheckContext)
 fn effective_type_scope(env: &TypeEnv, ctx: &TypeCheckContext) -> HashSet<String> {
     let mut scope = ctx.active_type_scope.clone();
     for ty in env.values() {
-        collect_free_type_vars(ty, &mut HashSet::new(), &mut scope);
+        let resolved = ctx.resolve_type(ty);
+        collect_free_type_vars(&resolved, &mut HashSet::new(), &mut scope);
     }
     scope
 }
@@ -1612,7 +1614,8 @@ fn infer_expr(
                     ensure_expected(body, &body_ty, &return_type, ctx)?;
                     let declared_param_types: Vec<Type> =
                         params.iter().map(|p| ctx.resolve_type(&p.type_)).collect();
-                    Type::Fun(declared_param_types, Box::new(body_ty))
+                    let inferred_fun = Type::Fun(declared_param_types, Box::new(body_ty));
+                    return Ok(ctx.resolve_type(&inferred_fun));
                 }
                 Some(other) => return Err(TypeError::ErrorUnexpectedLambda(other)),
                 None => {
@@ -1789,7 +1792,10 @@ fn infer_expr(
         Expr::TypeAscription(e, ty) => {
             let inner_ty = infer_expr(e, Some(ty), env, ctx)?;
             ensure_expected(e, &inner_ty, ty, ctx)?;
-            ty.clone()
+            if let Some(expected_ty) = expected {
+                ensure_expected(expr, ty, expected_ty, ctx)?;
+            }
+            return Ok(ctx.resolve_type(ty));
         }
 
         // #ambiguous-type-as-bottom: without an expected sum type, this extension
@@ -2462,9 +2468,6 @@ fn infer_expr(
             for generic in generics {
                 ctx.active_type_scope.insert(generic.clone());
             }
-            for shadow_name in unshadow_subst.keys() {
-                ctx.active_type_scope.insert(shadow_name.clone());
-            }
 
             let inferred_inner_res = (|| -> Result<Type, TypeError> {
                 match expected {
@@ -2490,11 +2493,19 @@ fn infer_expr(
 
                         infer_expr(inner, Some(&renamed_expected_inner), &adjusted_env, ctx)
                     }
-                    Some(other) => Err(TypeError::ErrorUnexpectedTypeForExpression {
-                        expected: other.clone(),
-                        found: Type::ForAll(generics.clone(), Box::new(Type::Bottom)),
-                        expr: Some(format!("{}", expr)),
-                    }),
+                    Some(other) => {
+                        let found_inner = infer_expr(inner, None, &adjusted_env, ctx)?;
+                        let found_inner = if unshadow_subst.is_empty() {
+                            found_inner
+                        } else {
+                            substitute_named_type_vars(&found_inner, &unshadow_subst)
+                        };
+                        Err(TypeError::ErrorUnexpectedTypeForExpression {
+                            expected: other.clone(),
+                            found: Type::ForAll(generics.clone(), Box::new(found_inner)),
+                            expr: Some(format!("{}", expr)),
+                        })
+                    }
                     None => infer_expr(inner, None, &adjusted_env, ctx),
                 }
             })();
@@ -2507,7 +2518,8 @@ fn infer_expr(
                 substitute_named_type_vars(&inferred_inner, &unshadow_subst)
             };
 
-            Type::ForAll(generics.clone(), Box::new(restored_inner))
+            let inferred_forall = Type::ForAll(generics.clone(), Box::new(restored_inner));
+            return Ok(ctx.resolve_type(&inferred_forall));
         }
 
         Expr::TypeApplication(fun, type_args) => {
@@ -2545,7 +2557,7 @@ fn infer_expr(
             let rec_ty = ctx.resolve_type(rec_ty);
             let Some(unfolded_ty) = unfold_recursive_type_annotation(&rec_ty) else {
                 return Err(TypeError::ErrorUnexpectedTypeForExpression {
-                    expected: Type::Rec("X".to_string(), Box::new(Type::Var("X".to_string()))),
+                    expected: Type::Rec("X".to_string(), Box::new(ctx.fresh_meta_type())),
                     found: rec_ty,
                     expr: Some(format!("{}", expr)),
                 });
@@ -2561,7 +2573,7 @@ fn infer_expr(
             let rec_ty = ctx.resolve_type(rec_ty);
             let Some(unfolded_ty) = unfold_recursive_type_annotation(&rec_ty) else {
                 return Err(TypeError::ErrorUnexpectedTypeForExpression {
-                    expected: Type::Rec("X".to_string(), Box::new(Type::Var("X".to_string()))),
+                    expected: Type::Rec("X".to_string(), Box::new(ctx.fresh_meta_type())),
                     found: rec_ty,
                     expr: Some(format!("{}", expr)),
                 });
