@@ -86,6 +86,14 @@ pub enum TypeError {
         found: Type,
         expr: Option<String>,
     },
+
+    // Stage 3: type reconstruction + universal types
+    ErrorOccursCheckInfiniteType,
+    ErrorNotAGenericFunction,
+    ErrorUndefinedTypeVariable(String),
+    ErrorAmbiguousType,
+    ErrorDuplicateTypeParameter(String),
+    ErrorIncorrectNumberOfTypeArguments { expected: usize, found: usize },
 }
 
 impl fmt::Display for TypeError {
@@ -447,6 +455,35 @@ impl fmt::Display for TypeError {
                 }
                 Ok(())
             }
+
+            // Stage 3
+            TypeError::ErrorOccursCheckInfiniteType => write!(
+                f,
+                "ERROR_OCCURS_CHECK_INFINITE_TYPE:\n  Unification produced an infinite type"
+            ),
+            TypeError::ErrorNotAGenericFunction => write!(
+                f,
+                "ERROR_NOT_A_GENERIC_FUNCTION:\n  Type application was used on a non-generic function"
+            ),
+            TypeError::ErrorUndefinedTypeVariable(name) => write!(
+                f,
+                "ERROR_UNDEFINED_TYPE_VARIABLE:\n  Type variable '{}' is not in scope",
+                name
+            ),
+            TypeError::ErrorAmbiguousType => write!(
+                f,
+                "ERROR_AMBIGUOUS_TYPE:\n  Type reconstruction left unconstrained type variable(s)"
+            ),
+            TypeError::ErrorDuplicateTypeParameter(name) => write!(
+                f,
+                "ERROR_DUPLICATE_TYPE_PARAMETER:\n  Duplicate type parameter '{}'",
+                name
+            ),
+            TypeError::ErrorIncorrectNumberOfTypeArguments { expected, found } => write!(
+                f,
+                "ERROR_INCORRECT_NUMBER_OF_TYPE_ARGUMENTS:\n  Expected {} type argument(s), but found {}",
+                expected, found
+            ),
         }
     }
 }
