@@ -1,0 +1,6 @@
+﻿language core;
+extend with #recursive-types;
+
+fn main(n : Nat) -> Nat {
+  return fold [Nat] 0
+}

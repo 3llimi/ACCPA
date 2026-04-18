@@ -9,6 +9,7 @@ struct TypeCheckContext {
     extensions: HashSet<String>,
     exception_type: Option<Type>,
     type_reconstruction_enabled: bool,
+    strict_ambiguous_type_errors_enabled: bool,
     universal_types_enabled: bool,
     next_type_var_id: usize,
     type_var_subst: HashMap<String, Type>,
@@ -97,6 +98,7 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         extensions,
         exception_type: None,
         type_reconstruction_enabled: false,
+        strict_ambiguous_type_errors_enabled: false,
         universal_types_enabled: false,
         next_type_var_id: 0,
         type_var_subst: HashMap::new(),
@@ -104,6 +106,9 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         checked_expr_types: Vec::new(),
     };
     ctx.type_reconstruction_enabled = ctx.has_extension("type-reconstruction");
+    // Optional strict mode: keep ERROR_AMBIGUOUS_TYPE disabled unless explicitly requested.
+    ctx.strict_ambiguous_type_errors_enabled =
+        ctx.has_extension("strict-ambiguous-type-errors");
     ctx.universal_types_enabled = ctx.has_extension("universal-types");
 
     let rewritten_program = if ctx.type_reconstruction_enabled {
@@ -201,7 +206,9 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         typecheck_decl(decl, &fn_env, &mut ctx, &empty_type_scope)?;
     }
 
-    check_ambiguous_types(&fn_env, &ctx)?;
+    if ctx.strict_ambiguous_type_errors_enabled {
+        check_ambiguous_types(&fn_env, &ctx)?;
+    }
 
     Ok(())
 }
@@ -1430,7 +1437,11 @@ fn check_ambiguous_types(fn_env: &HashMap<String, Type>, ctx: &TypeCheckContext)
         return Ok(());
     }
 
-    if fn_env.values().any(|ty| contains_unresolved_meta(ty, ctx)) {
+    if fn_env
+        .values()
+        .map(|ty| ctx.resolve_type(ty))
+        .any(|ty| contains_unresolved_meta(&ty, ctx))
+    {
         return Err(TypeError::ErrorAmbiguousType);
     }
 
@@ -1449,6 +1460,25 @@ fn check_ambiguous_types(fn_env: &HashMap<String, Type>, ctx: &TypeCheckContext)
     }
 
     Ok(())
+}
+
+fn effective_type_scope(env: &TypeEnv, ctx: &TypeCheckContext) -> HashSet<String> {
+    let mut scope = ctx.active_type_scope.clone();
+    for ty in env.values() {
+        collect_free_type_vars(ty, &mut HashSet::new(), &mut scope);
+    }
+    scope
+}
+
+fn unfold_recursive_type_annotation(rec_ty: &Type) -> Option<Type> {
+    match rec_ty {
+        Type::Rec(var, body) => {
+            let mut subst = HashMap::new();
+            subst.insert(var.clone(), rec_ty.clone());
+            Some(substitute_named_type_vars(body, &subst))
+        }
+        _ => None,
+    }
 }
 
 // STEP 3: infer_expr
@@ -2412,10 +2442,15 @@ fn infer_expr(
                 return Err(TypeError::ErrorDuplicateTypeParameter(dup));
             }
 
+            let used_names = effective_type_scope(env, ctx);
             let mut shadow_subst = HashMap::new();
+            let mut unshadow_subst = HashMap::new();
             for generic in generics {
-                let fresh = fresh_named_type_var(ctx, generic);
-                shadow_subst.insert(generic.clone(), Type::Var(fresh));
+                if used_names.contains(generic) {
+                    let fresh = fresh_named_type_var(ctx, generic);
+                    shadow_subst.insert(generic.clone(), Type::Var(fresh.clone()));
+                    unshadow_subst.insert(fresh, Type::Var(generic.clone()));
+                }
             }
 
             let mut adjusted_env = env.clone();
@@ -2426,6 +2461,9 @@ fn infer_expr(
             let saved_scope = ctx.active_type_scope.clone();
             for generic in generics {
                 ctx.active_type_scope.insert(generic.clone());
+            }
+            for shadow_name in unshadow_subst.keys() {
+                ctx.active_type_scope.insert(shadow_name.clone());
             }
 
             let inferred_inner_res = (|| -> Result<Type, TypeError> {
@@ -2463,8 +2501,13 @@ fn infer_expr(
 
             ctx.active_type_scope = saved_scope;
             let inferred_inner = inferred_inner_res?;
+            let restored_inner = if unshadow_subst.is_empty() {
+                inferred_inner
+            } else {
+                substitute_named_type_vars(&inferred_inner, &unshadow_subst)
+            };
 
-            Type::ForAll(generics.clone(), Box::new(inferred_inner))
+            Type::ForAll(generics.clone(), Box::new(restored_inner))
         }
 
         Expr::TypeApplication(fun, type_args) => {
@@ -2483,8 +2526,9 @@ fn infer_expr(
                 });
             }
 
+            let type_arg_scope = effective_type_scope(env, ctx);
             for type_arg in type_args {
-                check_type_validity(type_arg, &ctx.active_type_scope, ctx)?;
+                check_type_validity(type_arg, &type_arg_scope, ctx)?;
             }
 
             let mut subst = HashMap::new();
@@ -2495,17 +2539,43 @@ fn infer_expr(
             substitute_named_type_vars(&inner_type, &subst)
         }
 
-        Expr::Fold(_, _) | Expr::Unfold(_, _) => {
-            return Err(TypeError::ErrorUnexpectedTypeForExpression {
-                expected: Type::Bottom,
-                found: Type::Bottom,
-                expr: Some(format!("No inference: {}", expr)),
-            })
+        Expr::Fold(rec_ty, inner_expr) => {
+            let type_scope = effective_type_scope(env, ctx);
+            check_type_validity(rec_ty, &type_scope, ctx)?;
+            let rec_ty = ctx.resolve_type(rec_ty);
+            let Some(unfolded_ty) = unfold_recursive_type_annotation(&rec_ty) else {
+                return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                    expected: Type::Rec("X".to_string(), Box::new(Type::Var("X".to_string()))),
+                    found: rec_ty,
+                    expr: Some(format!("{}", expr)),
+                });
+            };
+
+            infer_expr(inner_expr, Some(&unfolded_ty), env, ctx)?;
+            rec_ty
+        }
+
+        Expr::Unfold(rec_ty, inner_expr) => {
+            let type_scope = effective_type_scope(env, ctx);
+            check_type_validity(rec_ty, &type_scope, ctx)?;
+            let rec_ty = ctx.resolve_type(rec_ty);
+            let Some(unfolded_ty) = unfold_recursive_type_annotation(&rec_ty) else {
+                return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                    expected: Type::Rec("X".to_string(), Box::new(Type::Var("X".to_string()))),
+                    found: rec_ty,
+                    expr: Some(format!("{}", expr)),
+                });
+            };
+
+            infer_expr(inner_expr, Some(&rec_ty), env, ctx)?;
+            unfolded_ty
         }
     };
 
     if let Some(expected_ty) = expected {
-        ensure_expected(expr, &inferred, expected_ty, ctx)?;
+        if !types_match(&inferred, expected_ty, ctx) {
+            ensure_expected(expr, &inferred, expected_ty, ctx)?;
+        }
     }
 
     Ok(ctx.resolve_type(&inferred))
