@@ -106,10 +106,10 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         checked_expr_types: Vec::new(),
     };
     ctx.type_reconstruction_enabled = ctx.has_extension("type-reconstruction");
-    // Under type reconstruction, unresolved meta-types are always reported.
-    // An optional extension can still force this check if needed in other modes.
+    // Spec: unresolved meta-types are accepted while reconstruction is enabled.
+    // Keep strict ambiguity checks only for non-reconstruction modes.
     ctx.strict_ambiguous_type_errors_enabled =
-        ctx.type_reconstruction_enabled || ctx.has_extension("strict-ambiguous-type-errors");
+        !ctx.type_reconstruction_enabled && ctx.has_extension("strict-ambiguous-type-errors");
     ctx.universal_types_enabled = ctx.has_extension("universal-types");
 
     let rewritten_program = if ctx.type_reconstruction_enabled {
@@ -142,6 +142,20 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
                 if let Some(dup) = find_duplicate_name(generics) {
                     return Err(TypeError::ErrorDuplicateTypeParameter(dup));
                 }
+
+                // Validate generic signatures before publishing them in fn_env
+                // so later declarations cannot observe ill-scoped type variables.
+                let mut generic_scope = HashSet::new();
+                for generic in generics {
+                    generic_scope.insert(generic.clone());
+                }
+                for param in param_decls {
+                    check_type_validity(&param.type_, &generic_scope, &ctx)?;
+                }
+                if let Some(ret_ty) = return_type {
+                    check_type_validity(ret_ty, &generic_scope, &ctx)?;
+                }
+
                 let inner = build_function_type(param_decls, return_type);
                 fn_env.insert(name.clone(), Type::ForAll(generics.clone(), Box::new(inner)));
             }
@@ -1314,6 +1328,18 @@ fn try_unify_types(found: &Type, expected: &Type, ctx: &mut TypeCheckContext) ->
     }
 }
 
+fn require_unification(found: &Type, expected: &Type, ctx: &mut TypeCheckContext) -> Result<(), TypeError> {
+    if try_unify_types(found, expected, ctx)? {
+        return Ok(());
+    }
+
+    Err(TypeError::ErrorUnexpectedTypeForExpression {
+        expected: ctx.resolve_type(expected),
+        found: ctx.resolve_type(found),
+        expr: None,
+    })
+}
+
 fn is_unresolved_meta_var(ty: &Type, ctx: &TypeCheckContext) -> bool {
     match ctx.resolve_type(ty) {
         Type::Var(name) => TypeCheckContext::is_meta_var_name(&name),
@@ -1327,7 +1353,7 @@ fn ensure_function_shape(ty: &Type, arity: usize, ctx: &mut TypeCheckContext) ->
         let params: Vec<Type> = (0..arity).map(|_| ctx.fresh_meta_type()).collect();
         let ret = ctx.fresh_meta_type();
         let shape = Type::Fun(params, Box::new(ret));
-        let _ = try_unify_types(&resolved, &shape, ctx)?;
+        require_unification(&resolved, &shape, ctx)?;
         return Ok(ctx.resolve_type(&shape));
     }
     Ok(resolved)
@@ -1338,7 +1364,7 @@ fn ensure_ref_shape(ty: &Type, ctx: &mut TypeCheckContext) -> Result<Type, TypeE
     if is_unresolved_meta_var(&resolved, ctx) {
         let inner = ctx.fresh_meta_type();
         let shape = Type::Ref(Box::new(inner));
-        let _ = try_unify_types(&resolved, &shape, ctx)?;
+        require_unification(&resolved, &shape, ctx)?;
         return Ok(ctx.resolve_type(&shape));
     }
     Ok(resolved)
@@ -1349,7 +1375,7 @@ fn ensure_list_shape(ty: &Type, ctx: &mut TypeCheckContext) -> Result<Type, Type
     if is_unresolved_meta_var(&resolved, ctx) {
         let inner = ctx.fresh_meta_type();
         let shape = Type::List(Box::new(inner));
-        let _ = try_unify_types(&resolved, &shape, ctx)?;
+        require_unification(&resolved, &shape, ctx)?;
         return Ok(ctx.resolve_type(&shape));
     }
     Ok(resolved)
@@ -1359,7 +1385,7 @@ fn ensure_tuple_shape(ty: &Type, tuple_len: usize, ctx: &mut TypeCheckContext) -
     let resolved = ctx.resolve_type(ty);
     if is_unresolved_meta_var(&resolved, ctx) {
         let shape = Type::Tuple((0..tuple_len).map(|_| ctx.fresh_meta_type()).collect());
-        let _ = try_unify_types(&resolved, &shape, ctx)?;
+        require_unification(&resolved, &shape, ctx)?;
         return Ok(ctx.resolve_type(&shape));
     }
     Ok(resolved)
@@ -1381,7 +1407,7 @@ fn ensure_record_shape_from_fields(
                 })
                 .collect(),
         );
-        let _ = try_unify_types(&resolved, &shape, ctx)?;
+        require_unification(&resolved, &shape, ctx)?;
         return Ok(ctx.resolve_type(&shape));
     }
     Ok(resolved)
@@ -1391,7 +1417,7 @@ fn ensure_sum_shape(ty: &Type, ctx: &mut TypeCheckContext) -> Result<Type, TypeE
     let resolved = ctx.resolve_type(ty);
     if is_unresolved_meta_var(&resolved, ctx) {
         let shape = Type::Sum(Box::new(ctx.fresh_meta_type()), Box::new(ctx.fresh_meta_type()));
-        let _ = try_unify_types(&resolved, &shape, ctx)?;
+        require_unification(&resolved, &shape, ctx)?;
         return Ok(ctx.resolve_type(&shape));
     }
     Ok(resolved)
@@ -1422,22 +1448,7 @@ fn contains_unresolved_meta(ty: &Type, ctx: &TypeCheckContext) -> bool {
     }
 }
 
-fn sum_tree_contains_fun_param(sum_like: &Type, target: &Type) -> bool {
-    match sum_like {
-        Type::Sum(left, right) => {
-            sum_tree_contains_fun_param(left, target)
-                || sum_tree_contains_fun_param(right, target)
-        }
-        Type::Fun(params, _) => params.iter().any(|p| types_alpha_equal(p, target)),
-        _ => false,
-    }
-}
-
 fn check_ambiguous_types(fn_env: &HashMap<String, Type>, ctx: &TypeCheckContext) -> Result<(), TypeError> {
-    if !ctx.type_reconstruction_enabled {
-        return Ok(());
-    }
-
     if fn_env
         .values()
         .map(|ty| ctx.resolve_type(ty))
@@ -1553,6 +1564,11 @@ fn infer_expr(
 
         //  Abstraction 
         Expr::Abstraction(params, body) => {
+            let type_scope = effective_type_scope(env, ctx);
+            for param in params {
+                check_type_validity(&param.type_, &type_scope, ctx)?;
+            }
+
             let expected_shape = match expected {
                 Some(expected_ty) => Some(ensure_function_shape(expected_ty, params.len(), ctx)?),
                 None => None,
@@ -1790,6 +1806,9 @@ fn infer_expr(
         }
 
         Expr::TypeAscription(e, ty) => {
+            let type_scope = effective_type_scope(env, ctx);
+            check_type_validity(ty, &type_scope, ctx)?;
+
             let inner_ty = infer_expr(e, Some(ty), env, ctx)?;
             ensure_expected(e, &inner_ty, ty, ctx)?;
             if let Some(expected_ty) = expected {
@@ -2444,6 +2463,14 @@ fn infer_expr(
         }
 
         Expr::TypeAbstraction(generics, inner) => {
+            if !ctx.universal_types_enabled {
+                return Err(TypeError::ErrorUnexpectedTypeForExpression {
+                    expected: expected.cloned().unwrap_or(Type::Top),
+                    found: Type::ForAll(generics.clone(), Box::new(Type::Top)),
+                    expr: Some(format!("{}", expr)),
+                });
+            }
+
             if let Some(dup) = find_duplicate_name(generics) {
                 return Err(TypeError::ErrorDuplicateTypeParameter(dup));
             }
@@ -2523,6 +2550,10 @@ fn infer_expr(
         }
 
         Expr::TypeApplication(fun, type_args) => {
+            if !ctx.universal_types_enabled {
+                return Err(TypeError::ErrorNotAGenericFunction);
+            }
+
             let fun_type = infer_expr(fun, None, env, ctx)?;
             let fun_type = ctx.resolve_type(&fun_type);
 
@@ -2610,20 +2641,6 @@ fn ensure_expected(
 
     let found = ctx.resolve_type(found);
     let expected = ctx.resolve_type(expected);
-
-    if ctx.type_reconstruction_enabled {
-        let should_report_occurs = match expr {
-            // main-145 style: variable forced into recursive sum domain.
-            Expr::Var(_) => sum_tree_contains_fun_param(&expected, &found),
-            // main-149 style: injected branch carries function consuming the whole expected type.
-            Expr::Inl(_) | Expr::Inr(_) => sum_tree_contains_fun_param(&found, &expected),
-            _ => false,
-        };
-
-        if should_report_occurs {
-            return Err(TypeError::ErrorOccursCheckInfiniteType);
-        }
-    }
 
     if let (Type::Variant(found_labels), Type::Variant(expected_labels)) = (&found, &expected) {
         let missing: Vec<String> = expected_labels

@@ -1,0 +1,5 @@
+language core;
+fn id(x : Nat) -> Nat { return x }
+fn main(x : Nat) -> Nat {
+  return id[Nat](x)
+}

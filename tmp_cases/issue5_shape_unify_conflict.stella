@@ -1,0 +1,8 @@
+language core;
+extend with #type-reconstruction;
+fn bad(f : Auto) -> Nat {
+  return f(0)
+}
+fn main(x : Nat) -> Nat {
+  return bad(x)
+}

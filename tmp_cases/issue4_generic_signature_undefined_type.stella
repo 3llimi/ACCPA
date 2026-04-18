@@ -1,0 +1,7 @@
+language core;
+generic fn bad[T](x : UnknownType) -> T {
+  return x
+}
+fn main(x : Nat) -> Nat {
+  return x
+}
