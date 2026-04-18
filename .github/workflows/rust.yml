@@ -53,8 +53,8 @@ jobs:
             if [[ "${ref_name}" =~ ^hw([0-9]+)$ ]]; then
               echo "hw_num=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
             else
-              # Default to hw3 when branch name does not encode a homework number.
-              echo "hw_num=3" >> "$GITHUB_OUTPUT"
+              # Default to hw2 when branch name does not encode a homework number.
+              echo "hw_num=2" >> "$GITHUB_OUTPUT"
             fi
           fi
 
