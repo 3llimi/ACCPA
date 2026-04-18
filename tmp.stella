@@ -1,9 +1,10 @@
 language core;
+extend with #type-cast, #top-type;
 
-fn foo(f : fn(Bool) -> Bool) -> Bool {
-  return f(true)
+fn foo(f : fn(Nat)->Nat) -> Nat {
+  return f(0);
 }
 
-fn main(n : Nat) -> Bool {
-  return foo(fn(x : Nat) { return Nat::iszero(x) })
+fn main(a : Nat) -> Bool {
+  return foo(a cast as (fn(Nat)->Nat)) cast as Bool
 }

@@ -6,7 +6,7 @@ from pathlib import Path
 from report import print_report
 from datetime import datetime
 
-DOCKER_BUILD_TIMEOUT = 300
+DOCKER_BUILD_TIMEOUT = 300 
 
 
 def run_student_pipeline(homework: str):
@@ -18,20 +18,14 @@ def run_student_pipeline(homework: str):
 
     print(f"Running pipeline for {branch}")
 
-    test_folders = [
-        d
-        for d in os.listdir(project_dir)
-        if os.path.isdir(os.path.join(project_dir, d)) and "public-tests" in d.lower()
-    ]
+    test_folders = [d for d in os.listdir(project_dir) if os.path.isdir(os.path.join(project_dir, d)) and "public-tests" in d.lower()]
     if not test_folders:
         print("❌ No test folder found in project directory")
         sys.exit(1)
-
+    
     tests_dir = os.path.join(project_dir, test_folders[0], homework)
     if not os.path.exists(tests_dir):
-        print(
-            f"❌ No tests for {homework} in folder {tests_dir}, maybe you forgot to update tests submodule"
-        )
+        print(f"❌ No tests for {homework} in folder {tests_dir}, maybe you forgot to update tests submodule")
         sys.exit(1)
     submission_dir = os.path.join(project_dir, "solution")
     dockerfile = os.path.join(project_dir, "Dockerfile")
@@ -43,12 +37,12 @@ def run_student_pipeline(homework: str):
     print(f"Building Docker image {image_tag} from {project_dir}")
 
     build = subprocess.run(
-        ["docker", "build", "-t", image_tag, "."],
+        ["docker", "build", "-t", image_tag, "."], 
         cwd=project_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env=os.environ,
+        env=os.environ
     )
 
     if build.returncode != 0:
@@ -57,7 +51,7 @@ def run_student_pipeline(homework: str):
         sys.exit(1)
     else:
         print(f"Build Docker image successfully")
-
+    
     # Prefer a checker in the current homework folder, but fall back to any
     # checker script available in the public-tests tree (e.g. hw1/check.sh).
     check_script = os.path.join(tests_dir, "check.sh")
@@ -67,9 +61,7 @@ def run_student_pipeline(homework: str):
             check_script = str(fallback_checkers[0])
             print(f"ℹ️ Using fallback checker script: {check_script}")
         else:
-            print(
-                f"❌ No checker script found for {homework} (expected {check_script})"
-            )
+            print(f"❌ No checker script found for {homework} (expected {check_script})")
             sys.exit(1)
 
     results = []
@@ -85,49 +77,43 @@ def run_student_pipeline(homework: str):
             with open(input_file, "r") as infile:
                 # test_content = infile.read()
                 run = subprocess.Popen(
-                    ["docker", "run", "--rm", "--network=none", "-i", image_tag],
+                    [
+                        "docker", "run",
+                        "--rm",
+                        "--network=none", 
+                        "-i",
+                        image_tag
+                    ],
                     stdin=infile,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    text=True,
+                    text=True
                 )
                 check_proc = subprocess.run(
                     ["sh", check_script, input_file, expected_file],
-                    stdin=run.stdout,
+                    stdin=run.stdout,  
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    timeout=5,
+                    timeout=5
                 )
                 run.stdout.close()
                 run.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            if run:
-                run.kill()
+            if run: run.kill()
             results.append((test_name, {"status": "timeout"}))
             continue
-
+        
         status = "passed" if check_proc.returncode == 0 else "failed"
-        results.append(
-            (
-                test_name,
-                {
-                    "status": status,
-                    "stdout": (check_proc.stdout + check_proc.stderr).strip(),
-                },
-            )
-        )
+        results.append((
+            test_name,
+            {"status": status, "stdout": (check_proc.stdout + check_proc.stderr).strip()}
+        ))
 
     duration = time.time() - start_time
 
     report_path = os.path.join("reports", f"public_{homework}.json")
-    print_report(
-        homework,
-        results,
-        datetime.fromtimestamp(start_time).strftime("%Y-%m-%d"),
-        duration,
-        save_json=report_path,
-    )
+    print_report(homework, results, datetime.fromtimestamp(start_time).strftime("%Y-%m-%d"), duration, save_json=report_path)
 
     os.makedirs(submission_dir, exist_ok=True)
     image_tar = os.path.join(submission_dir, f"student_{homework}_image.tar")
