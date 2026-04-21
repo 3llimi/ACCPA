@@ -1,5 +1,7 @@
 # ACCPA Stella Type Checker (Rust)
 
+![ACCPA Stella Type Checker Banner](assets/banner.png)
+
 This repository contains a Rust implementation of a type checker for the Stella language.
 It was developed incrementally across multiple ACCPA stages, and the current codebase includes:
 
