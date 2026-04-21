@@ -105,13 +105,16 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
         active_type_scope: HashSet::new(),
         checked_expr_types: Vec::new(),
     };
+    // Reconstruction Step 1: check whether reconstruction is enabled.
+    // If enabled, the checker can create unknown types and solve them later.
     ctx.type_reconstruction_enabled = ctx.has_extension("type-reconstruction");
-    // Ambiguous-type reporting is relevant during reconstruction.
-    // Also keep support for an explicit strict toggle outside reconstruction.
     ctx.strict_ambiguous_type_errors_enabled =
         ctx.type_reconstruction_enabled || ctx.has_extension("strict-ambiguous-type-errors");
+    // Universal Types Step 1: enable forall types and explicit type application.
     ctx.universal_types_enabled = ctx.has_extension("universal-types");
 
+    // Reconstruction Step 2: replace every Auto with a fresh unknown (?Tn)
+    // before normal type inference begins.
     let rewritten_program = if ctx.type_reconstruction_enabled {
         rewrite_program_auto_types(program, &mut ctx)
     } else {
@@ -156,6 +159,8 @@ pub fn typecheck_program(program: &Program) -> Result<(), TypeError> {
                     check_type_validity(ret_ty, &generic_scope, &ctx)?;
                 }
 
+                // Universal Types Step 2: store generic functions as ForAll so
+                // later type application can instantiate them.
                 let inner = build_function_type(param_decls, return_type);
                 fn_env.insert(name.clone(), Type::ForAll(generics.clone(), Box::new(inner)));
             }
@@ -314,6 +319,8 @@ fn find_duplicate_name(names: &[String]) -> Option<String> {
     None
 }
 
+// Reconstruction Step 2 helper: AST-wide rewrite from Auto to fresh unknowns.
+// After this pass, inference sees only concrete types and ?Tn variables.
 fn rewrite_program_auto_types(program: &Program, ctx: &mut TypeCheckContext) -> Program {
     Program {
         language_decl: program.language_decl,
@@ -673,6 +680,7 @@ fn rewrite_pattern_auto_types(pattern: &Pattern, ctx: &mut TypeCheckContext) -> 
 
 fn rewrite_type_auto_types(ty: &Type, ctx: &mut TypeCheckContext) -> Type {
     match ty {
+        // Reconstruction Step 2a: each Auto gets its own fresh unknown.
         Type::Auto => ctx.fresh_meta_type(),
         Type::Fun(params, ret) => Type::Fun(
             params
@@ -1012,6 +1020,8 @@ fn fresh_bound_type_var(base: &str, used: &HashSet<String>) -> String {
     }
 }
 
+// Universal Types helper: substitute named type variables while avoiding
+// variable capture inside binders like Rec and ForAll.
 fn substitute_named_type_vars(ty: &Type, subst: &HashMap<String, Type>) -> Type {
     match ty {
         Type::Var(name) => subst.get(name).cloned().unwrap_or_else(|| Type::Var(name.clone())),
@@ -1053,6 +1063,7 @@ fn substitute_named_type_vars(ty: &Type, subst: &HashMap<String, Type>) -> Type 
         ),
         Type::Ref(inner) => Type::Ref(Box::new(substitute_named_type_vars(inner, subst))),
         Type::Rec(name, inner) => {
+            // Universal Types Step A: gather names we must not capture.
             let forbidden = free_type_vars_in_subst(subst);
             let mut used = forbidden.clone();
             used.insert(name.clone());
@@ -1060,6 +1071,8 @@ fn substitute_named_type_vars(ty: &Type, subst: &HashMap<String, Type>) -> Type 
                 used.insert(key.clone());
             }
 
+            // Universal Types Step B: rename binder if substitution would
+            // capture it.
             let mut binder_name = name.clone();
             let mut renamed_inner = inner.as_ref().clone();
             if forbidden.contains(name) {
@@ -1070,6 +1083,8 @@ fn substitute_named_type_vars(ty: &Type, subst: &HashMap<String, Type>) -> Type 
                 binder_name = fresh;
             }
 
+            // Universal Types Step C: never substitute a variable that is
+            // bound by this Rec binder.
             let mut next_subst = subst.clone();
             next_subst.remove(name);
             next_subst.remove(&binder_name);
@@ -1080,6 +1095,7 @@ fn substitute_named_type_vars(ty: &Type, subst: &HashMap<String, Type>) -> Type 
             )
         }
         Type::ForAll(vars, inner) => {
+            // Universal Types Step A: gather names we must not capture.
             let forbidden = free_type_vars_in_subst(subst);
             let mut used = forbidden.clone();
             for var in vars {
@@ -1089,6 +1105,7 @@ fn substitute_named_type_vars(ty: &Type, subst: &HashMap<String, Type>) -> Type 
                 used.insert(key.clone());
             }
 
+            // Universal Types Step B: alpha-rename conflicting forall binders.
             let mut alpha_subst = HashMap::new();
             let mut renamed_vars = Vec::with_capacity(vars.len());
             for var in vars {
@@ -1108,6 +1125,7 @@ fn substitute_named_type_vars(ty: &Type, subst: &HashMap<String, Type>) -> Type 
                 substitute_named_type_vars(inner, &alpha_subst)
             };
 
+            // Universal Types Step C: do not substitute names bound by forall.
             let mut next_subst = subst.clone();
             for var in vars {
                 next_subst.remove(var);
@@ -1277,12 +1295,15 @@ fn occurs_in_meta(name: &str, ty: &Type, ctx: &TypeCheckContext) -> bool {
 }
 
 fn bind_meta_var(name: &str, ty: &Type, ctx: &mut TypeCheckContext) -> Result<(), TypeError> {
+    // Reconstruction Step 4: bind unknown `name` to `ty` after resolving
+    // current substitutions.
     let resolved_ty = ctx.resolve_type(ty);
     if let Type::Var(other) = &resolved_ty {
         if other == name {
             return Ok(());
         }
     }
+    // Reconstruction Step 4a: occurs-check prevents infinite types.
     if occurs_in_meta(name, &resolved_ty, ctx) {
         return Err(TypeError::ErrorOccursCheckInfiniteType);
     }
@@ -1290,14 +1311,19 @@ fn bind_meta_var(name: &str, ty: &Type, ctx: &mut TypeCheckContext) -> Result<()
     Ok(())
 }
 
+// Reconstruction Step 3: unify two types by solving unknowns (?Tn).
+// This returns true when the types can be made equal.
 fn try_unify_types(found: &Type, expected: &Type, ctx: &mut TypeCheckContext) -> Result<bool, TypeError> {
+    // Step 3.1: resolve both sides through current substitutions.
     let left = ctx.resolve_type(found);
     let right = ctx.resolve_type(expected);
 
+    // Step 3.2: already equal (including alpha-equivalent binders).
     if types_alpha_equal(&left, &right) {
         return Ok(true);
     }
 
+    // Step 3.3: if one side is still unknown, bind it to the other side.
     if let Type::Var(name) = &left {
         if TypeCheckContext::is_meta_var_name(name) {
             bind_meta_var(name, &right, ctx)?;
@@ -1311,6 +1337,7 @@ fn try_unify_types(found: &Type, expected: &Type, ctx: &mut TypeCheckContext) ->
         }
     }
 
+    // Step 3.4: otherwise, both sides must match structurally.
     match (left, right) {
         (Type::Fun(left_params, left_ret), Type::Fun(right_params, right_ret)) => {
             if left_params.len() != right_params.len() {
@@ -1383,6 +1410,7 @@ fn try_unify_types(found: &Type, expected: &Type, ctx: &mut TypeCheckContext) ->
             if left_vars.len() != right_vars.len() {
                 return Ok(false);
             }
+            // Step 3.4f: rename right binders to left binders, then recurse.
             let mut subst = HashMap::new();
             for (r, l) in right_vars.iter().zip(left_vars.iter()) {
                 subst.insert(r.clone(), Type::Var(l.clone()));
@@ -1395,6 +1423,8 @@ fn try_unify_types(found: &Type, expected: &Type, ctx: &mut TypeCheckContext) ->
 }
 
 fn require_unification(found: &Type, expected: &Type, ctx: &mut TypeCheckContext) -> Result<(), TypeError> {
+    // Reconstruction Step 3.5: helper that converts failed unification
+    // into a user-facing type mismatch error.
     if try_unify_types(found, expected, ctx)? {
         return Ok(());
     }
@@ -1416,6 +1446,8 @@ fn is_unresolved_meta_var(ty: &Type, ctx: &TypeCheckContext) -> bool {
 fn ensure_function_shape(ty: &Type, arity: usize, ctx: &mut TypeCheckContext) -> Result<Type, TypeError> {
     let resolved = ctx.resolve_type(ty);
     if is_unresolved_meta_var(&resolved, ctx) {
+        // Reconstruction Step 5.1: if syntax requires a function shape,
+        // force unknown type into Fun(param..., ret).
         let params: Vec<Type> = (0..arity).map(|_| ctx.fresh_meta_type()).collect();
         let ret = ctx.fresh_meta_type();
         let shape = Type::Fun(params, Box::new(ret));
@@ -1428,6 +1460,7 @@ fn ensure_function_shape(ty: &Type, arity: usize, ctx: &mut TypeCheckContext) ->
 fn ensure_ref_shape(ty: &Type, ctx: &mut TypeCheckContext) -> Result<Type, TypeError> {
     let resolved = ctx.resolve_type(ty);
     if is_unresolved_meta_var(&resolved, ctx) {
+        // Reconstruction Step 5.2: force unknown type into Ref(inner).
         let inner = ctx.fresh_meta_type();
         let shape = Type::Ref(Box::new(inner));
         require_unification(&resolved, &shape, ctx)?;
@@ -1439,6 +1472,7 @@ fn ensure_ref_shape(ty: &Type, ctx: &mut TypeCheckContext) -> Result<Type, TypeE
 fn ensure_list_shape(ty: &Type, ctx: &mut TypeCheckContext) -> Result<Type, TypeError> {
     let resolved = ctx.resolve_type(ty);
     if is_unresolved_meta_var(&resolved, ctx) {
+        // Reconstruction Step 5.3: force unknown type into List(inner).
         let inner = ctx.fresh_meta_type();
         let shape = Type::List(Box::new(inner));
         require_unification(&resolved, &shape, ctx)?;
@@ -1450,6 +1484,7 @@ fn ensure_list_shape(ty: &Type, ctx: &mut TypeCheckContext) -> Result<Type, Type
 fn ensure_tuple_shape(ty: &Type, tuple_len: usize, ctx: &mut TypeCheckContext) -> Result<Type, TypeError> {
     let resolved = ctx.resolve_type(ty);
     if is_unresolved_meta_var(&resolved, ctx) {
+        // Reconstruction Step 5.4: force unknown type into Tuple of known arity.
         let shape = Type::Tuple((0..tuple_len).map(|_| ctx.fresh_meta_type()).collect());
         require_unification(&resolved, &shape, ctx)?;
         return Ok(ctx.resolve_type(&shape));
@@ -1464,6 +1499,8 @@ fn ensure_record_shape_from_fields(
 ) -> Result<Type, TypeError> {
     let resolved = ctx.resolve_type(ty);
     if is_unresolved_meta_var(&resolved, ctx) {
+        // Reconstruction Step 5.5: force unknown type into a Record with the
+        // fields required by syntax.
         let shape = Type::Record(
             field_names
                 .iter()
@@ -1482,6 +1519,7 @@ fn ensure_record_shape_from_fields(
 fn ensure_sum_shape(ty: &Type, ctx: &mut TypeCheckContext) -> Result<Type, TypeError> {
     let resolved = ctx.resolve_type(ty);
     if is_unresolved_meta_var(&resolved, ctx) {
+        // Reconstruction Step 5.6: force unknown type into Sum(left, right).
         let shape = Type::Sum(Box::new(ctx.fresh_meta_type()), Box::new(ctx.fresh_meta_type()));
         require_unification(&resolved, &shape, ctx)?;
         return Ok(ctx.resolve_type(&shape));
@@ -1514,6 +1552,8 @@ fn contains_unresolved_meta(ty: &Type, ctx: &TypeCheckContext) -> bool {
     }
 }
 
+// Reconstruction Step 6: strict final pass.
+// If enabled, reject programs that still have unresolved ?Tn.
 fn check_ambiguous_types(fn_env: &HashMap<String, Type>, ctx: &TypeCheckContext) -> Result<(), TypeError> {
     if fn_env
         .values()
@@ -2529,6 +2569,8 @@ fn infer_expr(
         }
 
         Expr::TypeAbstraction(generics, inner) => {
+            // Universal Types Step 3: this expression is valid only when
+            // universal types are enabled.
             if !ctx.universal_types_enabled {
                 return Err(TypeError::ErrorUnexpectedTypeForExpression {
                     expected: expected.cloned().unwrap_or(Type::Top),
@@ -2537,10 +2579,13 @@ fn infer_expr(
                 });
             }
 
+            // Universal Types Step 4: generic names must be unique.
             if let Some(dup) = find_duplicate_name(generics) {
                 return Err(TypeError::ErrorDuplicateTypeParameter(dup));
             }
 
+            // Universal Types Step 5: avoid name capture by renaming generic
+            // binders that collide with names already in scope.
             let used_names = effective_type_scope(env, ctx);
             let mut shadow_subst = HashMap::new();
             let mut unshadow_subst = HashMap::new();
@@ -2557,11 +2602,15 @@ fn infer_expr(
                 *ty = substitute_named_type_vars(ty, &shadow_subst);
             }
 
+            // Universal Types Step 6: add generic binders to active scope while
+            // checking the body.
             let saved_scope = ctx.active_type_scope.clone();
             for generic in generics {
                 ctx.active_type_scope.insert(generic.clone());
             }
 
+            // Universal Types Step 7: infer/check inner expression and align
+            // binders with expected forall if one is provided.
             let inferred_inner_res = (|| -> Result<Type, TypeError> {
                 match expected {
                     Some(Type::ForAll(expected_generics, expected_inner)) => {
@@ -2603,6 +2652,8 @@ fn infer_expr(
                 }
             })();
 
+            // Universal Types Step 8: restore original scope and rebuild the
+            // final ForAll type.
             ctx.active_type_scope = saved_scope;
             let inferred_inner = inferred_inner_res?;
             let restored_inner = if unshadow_subst.is_empty() {
@@ -2616,18 +2667,24 @@ fn infer_expr(
         }
 
         Expr::TypeApplication(fun, type_args) => {
+            // Universal Types Step 9: type application is allowed only when
+            // universal types are enabled.
             if !ctx.universal_types_enabled {
                 return Err(TypeError::ErrorNotAGenericFunction);
             }
 
+            // Universal Types Step 10: infer the type of the callee.
             let fun_type = infer_expr(fun, None, env, ctx)?;
             let fun_type = ctx.resolve_type(&fun_type);
 
+            // Universal Types Step 11: callee must have a ForAll type.
             let (generic_params, inner_type) = match fun_type {
                 Type::ForAll(generic_params, inner_type) => (generic_params, inner_type),
                 _ => return Err(TypeError::ErrorNotAGenericFunction),
             };
 
+            // Universal Types Step 12: number of provided type arguments must
+            // match number of forall binders.
             if generic_params.len() != type_args.len() {
                 return Err(TypeError::ErrorIncorrectNumberOfTypeArguments {
                     expected: generic_params.len(),
@@ -2635,11 +2692,15 @@ fn infer_expr(
                 });
             }
 
+            // Universal Types Step 13: every explicit type argument must be
+            // valid in the current type scope.
             let type_arg_scope = effective_type_scope(env, ctx);
             for type_arg in type_args {
                 check_type_validity(type_arg, &type_arg_scope, ctx)?;
             }
 
+            // Universal Types Step 14: instantiate ForAll by substituting each
+            // binder with its corresponding type argument.
             let mut subst = HashMap::new();
             for (name, arg) in generic_params.iter().zip(type_args.iter()) {
                 subst.insert(name.clone(), arg.clone());

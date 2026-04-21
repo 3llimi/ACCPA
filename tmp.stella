@@ -1,10 +1,18 @@
 language core;
-extend with #type-cast, #top-type;
 
-fn foo(f : fn(Nat)->Nat) -> Nat {
-  return f(0);
+extend with 
+  #type-reconstruction;
+
+fn f1(n : auto) -> auto {
+  return n;
 }
 
-fn main(a : Nat) -> Bool {
-  return foo(a cast as (fn(Nat)->Nat)) cast as Bool
+
+
+fn f2(n : Bool) -> Bool {
+  return f1(n);
+}
+
+fn main(n : Bool) -> Bool {
+  return f1(n);
 }
